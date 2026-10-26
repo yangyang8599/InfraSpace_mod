@@ -27,35 +27,83 @@ namespace InfraSpaceMultiResourceLogistics
                 return string.Empty;
             }
 
-            Dictionary<string, int> incoming = new Dictionary<string, int>();
-            Dictionary<string, int> outgoing = new Dictionary<string, int>();
-            int incomingTotal = 0;
-            int outgoingTotal = 0;
-            Collect(building, resource, incoming, outgoing, ref incomingTotal, ref outgoingTotal);
-
+            Flow flow = CollectOne(building, resource);
             StringBuilder text = new StringBuilder();
             text.Append(resource.GetNameInGame());
-            if (incomingTotal <= 0 && outgoingTotal <= 0)
+            if (flow.IncomingTotal <= 0 && flow.OutgoingTotal <= 0)
             {
                 text.Append("\n当前没有在途货车");
                 return text.ToString();
             }
 
-            if (incomingTotal > 0)
+            if (flow.IncomingTotal > 0)
             {
-                text.Append("\n送货 ");
-                text.Append(incomingTotal);
-                AppendLines(text, incoming);
+                text.Append('\n');
+                text.Append(FormatSide("送货", flow.IncomingTotal, flow.Incoming));
             }
 
-            if (outgoingTotal > 0)
+            if (flow.OutgoingTotal > 0)
             {
-                text.Append("\n派送 ");
-                text.Append(outgoingTotal);
-                AppendLines(text, outgoing);
+                text.Append('\n');
+                text.Append(FormatSide("派送", flow.OutgoingTotal, flow.Outgoing));
             }
 
             return text.ToString();
+        }
+
+        internal static string DescribeIncoming(Building building, Resource resource)
+        {
+            Flow flow = CollectOne(building, resource);
+            return FormatSide("送货", flow.IncomingTotal, flow.Incoming);
+        }
+
+        internal static string DescribeOutgoing(Building building, Resource resource)
+        {
+            Flow flow = CollectOne(building, resource);
+            return FormatSide("派送", flow.OutgoingTotal, flow.Outgoing);
+        }
+
+        internal static string BuildingName(Building building)
+        {
+            return BuildingLabel(building);
+        }
+
+        private struct Flow
+        {
+            public int IncomingTotal;
+            public int OutgoingTotal;
+            public Dictionary<string, int> Incoming;
+            public Dictionary<string, int> Outgoing;
+        }
+
+        private static string FormatSide(string label, int total, Dictionary<string, int> amounts)
+        {
+            StringBuilder text = new StringBuilder();
+            text.Append(label);
+            text.Append(' ');
+            text.Append(total);
+            if (amounts != null && amounts.Count > 0)
+            {
+                AppendLines(text, amounts);
+            }
+
+            return text.ToString();
+        }
+
+        private static Flow CollectOne(Building building, Resource resource)
+        {
+            Flow flow = new Flow
+            {
+                Incoming = new Dictionary<string, int>(),
+                Outgoing = new Dictionary<string, int>(),
+            };
+            if (building == null || resource == null)
+            {
+                return flow;
+            }
+
+            Collect(building, resource, flow.Incoming, flow.Outgoing, ref flow.IncomingTotal, ref flow.OutgoingTotal);
+            return flow;
         }
 
         private static void Collect(

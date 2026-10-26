@@ -132,6 +132,18 @@ namespace InfraSpaceMultiResourceLogistics
         }
     }
 
+    [HarmonyPatch(typeof(CollectionProductionLogic), nameof(CollectionProductionLogic.GetMaxStorage))]
+    internal static class CenterStorageCapPatch
+    {
+        internal const int MaxCapacityPerResource = 2000;
+
+        // 搜集中心和配送中心共用这个上限，覆盖原版的 1000 加研究加成。
+        private static void Postfix(ref int __result)
+        {
+            __result = MaxCapacityPerResource;
+        }
+    }
+
     [HarmonyPatch(typeof(CollectionProductionLogic), nameof(CollectionProductionLogic.SetPlayerStorageLimit))]
     internal static class CollectionCapacityPatch
     {
