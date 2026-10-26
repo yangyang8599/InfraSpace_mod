@@ -1,0 +1,29 @@
+---
+description: InfraSpace Mod 工作区架构和兼容性约束
+alwaysApply: true
+---
+
+# 工作区边界
+
+- `src/InfraSpaceConstructionTools` 只放建造交互和批量操作。
+- `src/InfraSpaceProductionInsights` 只读模拟数据，只改分析显示。
+- `src/InfraSpaceMultiResourceLogistics` 负责多物资物流中心模拟。
+- `src/InfraSpaceStationTools` 负责车站端口和列车方向。
+- `research/` 不参与发布构建。
+
+# 兼容性
+
+- 产品标识统一用于源码目录、程序集、配置、根命名空间、README 和发布页；入口类型及持久字段登记在 `docs/COMPATIBILITY.md`。
+- 一个发布 Mod 必须拥有唯一且稳定的持久身份，不得与另一个 Mod 共用。
+- `InfraSpaceMultiResourceLogistics` 的持久身份固定为 `InfraSpaceMultiResourceLogistics`；所有物流中心使用 `MultiResourceLogisticsMod.centers`。
+- `InfraSpaceStationTools` 的持久身份固定为 `InfraSpaceStationTools`。
+- 2026-10-26 之前的旧身份只用 `tools/migrate_save_identities.py` 写入新存档副本；迁移后的四个身份不得直接更改。
+- 新增持久字段时同步更新 `docs/COMPATIBILITY.md`。
+- 跨 Mod 集成必须可选，不得增加编译时项目引用。
+- 重构功能时必须保留已登记的存档字段；再次变更身份时先实现新迁移路径并完成真实存档重载测试。
+
+# 文件操作
+
+- 搜索、读取和单文件编辑优先使用 Cursor 专用文件工具。
+- 批量移动、复制和重命名优先使用专用文件 API；若当前运行规则允许，可使用可审计的 PowerShell 命令。
+- 屏幕视觉操作只作为回收站、系统界面或无可用文件工具时的兜底方案，并先说明原因。

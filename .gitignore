@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+.vs/
+.vscode/
+*.user
+*.suo
+*.pdb
+*.dll
+*.exe
+
+# Cursor and OS transient files
+.cursorignore
+Thumbs.db
+Desktop.ini
+docs/history/
+research/
+*.sav

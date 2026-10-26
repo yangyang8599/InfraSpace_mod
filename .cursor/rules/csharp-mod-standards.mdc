@@ -1,0 +1,17 @@
+---
+description: InfraSpace C# Mod 和 Harmony patch 编码规范
+globs: src/**/*.cs
+alwaysApply: false
+---
+
+# C# 与 Harmony
+
+- `using` 只放在文件顶部，不使用函数内导入。
+- Harmony patch 类保持 `internal static`，方法尽量小并显式处理空对象。
+- Prefix 替换原版逻辑时，注释说明何时返回 `true` 或 `false`。
+- 反射成员集中缓存；找不到成员时安全回退原版逻辑并只记录一次日志。
+- 不在模拟线程中访问 Unity UI；共享集合要明确线程边界或加锁。
+- Mod 入口的运行时字段标记 `[NonSerialized]`。
+- 持久集合在 `Load()` 中兼容 `null`，不得假设旧存档含新字段。
+- 跨 Mod 类型用 `AccessTools.TypeByName` 探测，未安装时静默跳过。
+- 修改后运行 `dotnet build .\InfraSpaceMods.sln -c Release`。

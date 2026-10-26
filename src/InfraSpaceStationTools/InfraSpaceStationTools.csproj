@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>InfraSpaceStationTools</AssemblyName>
+    <RootNamespace>InfraSpaceStationTools</RootNamespace>
+    <GameManagedPath Condition="'$(GameManagedPath)' == ''">F:\SteamLibrary\steamapps\common\InfraSpace\InfraSpace_Data\Managed</GameManagedPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp" HintPath="$(GameManagedPath)\Assembly-CSharp.dll" Private="false" />
+    <Reference Include="DionicCore" HintPath="$(GameManagedPath)\DionicCore.dll" Private="false" />
+    <Reference Include="DionicGame" HintPath="$(GameManagedPath)\DionicGame.dll" Private="false" />
+    <Reference Include="InfraSpaceCore" HintPath="$(GameManagedPath)\InfraSpaceCore.dll" Private="false" />
+    <Reference Include="InfraSpaceGameExtensions" HintPath="$(GameManagedPath)\InfraSpaceGameExtensions.dll" Private="false" />
+    <Reference Include="InfraSpaceGameFeatures" HintPath="$(GameManagedPath)\InfraSpaceGameFeatures.dll" Private="false" />
+    <Reference Include="old" HintPath="$(GameManagedPath)\old.dll" Private="false" />
+    <Reference Include="UnityEngine" HintPath="$(GameManagedPath)\UnityEngine.dll" Private="false" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(GameManagedPath)\UnityEngine.CoreModule.dll" Private="false" />
+    <Reference Include="UnityEngine.IMGUIModule" HintPath="$(GameManagedPath)\UnityEngine.IMGUIModule.dll" Private="false" />
+    <Reference Include="UnityEngine.InputLegacyModule" HintPath="$(GameManagedPath)\UnityEngine.InputLegacyModule.dll" Private="false" />
+    <Reference Include="UnityEngine.TextRenderingModule" HintPath="$(GameManagedPath)\UnityEngine.TextRenderingModule.dll" Private="false" />
+    <Reference Include="UnityEngine.UIModule" HintPath="$(GameManagedPath)\UnityEngine.UIModule.dll" Private="false" />
+    <Reference Include="UnityEngine.UI" HintPath="$(GameManagedPath)\UnityEngine.UI.dll" Private="false" />
+  </ItemGroup>
+</Project>

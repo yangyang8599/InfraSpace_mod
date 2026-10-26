@@ -1,0 +1,7 @@
+{
+  "name": "InfraSpaceConstructionTools",
+  "author": "yangy",
+  "description": "Batch-move and copy buildings and networks, toggle road snapping, and upgrade connected rail chains.",
+  "version": "1.0.0",
+  "url": ""
+}

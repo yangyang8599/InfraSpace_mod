@@ -1,0 +1,7 @@
+{
+  "name": "InfraSpaceMultiResourceLogistics",
+  "author": "yangy",
+  "description": "Multi-resource collection and distribution centers with independent capacities and demand-aware dispatch.",
+  "version": "1.0.0",
+  "url": ""
+}
