@@ -11,7 +11,7 @@ using UnityEngine.UI;
 
 namespace InfraSpaceMultiResourceLogistics
 {
-    internal sealed class NativeCenterPanelController : MonoBehaviour, ICameraScrollBlocker
+    internal sealed class NativeCenterPanelController : MonoBehaviour, ICameraScrollBlocker, IMouseHoverListener
     {
         private static readonly FieldInfo CollectionCenterField =
             AccessTools.Field(typeof(CollectionInfoPanel), "collectionCenter");
@@ -22,6 +22,8 @@ namespace InfraSpaceMultiResourceLogistics
         private static readonly Color RoadWarningColor = new Color(0.86f, 0.16f, 0.14f, 1f);
 
         private static readonly Color StorageOnlyColor = new Color(0.42f, 0.42f, 0.44f, 1f);
+
+        private static readonly Color CoverageNameColor = new Color(0.55f, 0.86f, 1f, 1f);
 
         private static readonly Dictionary<int, Sprite> grayscaleSprites = new Dictionary<int, Sprite>();
 
@@ -67,6 +69,17 @@ namespace InfraSpaceMultiResourceLogistics
         private int activeScrollbarControlId;
         private long displayedBuildingId = -1;
         private string displayedResources = "";
+        private string viewedResourceName;
+        private long viewedForBuildingId = -1;
+        private Resource viewedResource;
+        private bool viewedStorageOnly;
+        private ConsumerProducer[] coverageCandidates = Array.Empty<ConsumerProducer>();
+        private string coverageCandidateKey;
+        private int coverageScanIndex;
+        private float coverageSnapshotTime;
+        private float lastCoveragePaint = -1f;
+        private bool coveragePaintPending;
+        private bool hoverRegistered;
 
         internal static void Attach(CollectionInfoPanel panel)
         {
@@ -141,8 +154,17 @@ namespace InfraSpaceMultiResourceLogistics
             }
 
             IReadOnlyList<Resource> resources = GetResources(center);
-            displayedBuildingId = GetConsumerProducer(center).building.GetID();
+            long buildingId = GetConsumerProducer(center).building.GetID();
+            if (buildingId != displayedBuildingId)
+            {
+                viewedResourceName = null;
+                coverageCandidateKey = null;
+                coverageScanIndex = 0;
+            }
+
+            displayedBuildingId = buildingId;
             displayedResources = string.Join("|", resources.Select(resource => resource.name));
+            StoreViewed(center);
             RebuildResourceChips(resources);
             SetPlusVisual();
             ApplyRoadWarnings();
@@ -206,6 +228,11 @@ namespace InfraSpaceMultiResourceLogistics
             }
 
             ApplyRoadWarnings();
+            if (viewedResource != null && viewedResource.name == resource.name)
+            {
+                StoreViewed(center);
+                WorldScripts.Inst?.visualizationManager?.MarkDirty();
+            }
         }
 
         private void Configure(
@@ -826,6 +853,11 @@ namespace InfraSpaceMultiResourceLogistics
             WorldScripts.Inst.visualizationManager.Update(true);
         }
 
+        private void OnEnable()
+        {
+            EnsureHoverListener();
+        }
+
         private void Update()
         {
             object center = GetCenter();
@@ -834,6 +866,7 @@ namespace InfraSpaceMultiResourceLogistics
                 return;
             }
 
+            EnsureHoverListener();
             EnsurePanelLabels();
             AlignResourceHeader();
             SetPlusVisual();
@@ -847,6 +880,32 @@ namespace InfraSpaceMultiResourceLogistics
             }
 
             ApplyRoadWarnings();
+            AdvanceCoverageQueries(center);
+        }
+
+        public bool HandleMouseHover(RaycastHit[] hits)
+        {
+            if (!isActiveAndEnabled || hits == null || hits.Length == 0)
+            {
+                return false;
+            }
+
+            object center = GetCenter();
+            Building covered = ClosestBuilding(hits);
+            if (center == null || covered == null)
+            {
+                return false;
+            }
+
+            string body = DescribeBuildingCoverage(center, covered);
+            if (string.IsNullOrEmpty(body))
+            {
+                return false;
+            }
+
+            string title = covered.GetCustomNameInGame();
+            WorldScripts.Inst?.tooltipManager?.ShowTooltipOneFrame(title ?? string.Empty, body);
+            return true;
         }
 
         private void LateUpdate()
@@ -996,9 +1055,364 @@ namespace InfraSpaceMultiResourceLogistics
             return Mathf.Max(measured, estimated) + 4f;
         }
 
+        internal bool TryGetCoverageResource(out Resource resource, out bool storageOnly)
+        {
+            object center = GetCenter();
+            Building building = center == null ? null : GetConsumerProducer(center)?.building;
+            long buildingId = building == null ? 0L : building.GetID();
+            if (center == null || buildingId != viewedForBuildingId || viewedResource == null)
+            {
+                if (buildingId != viewedForBuildingId)
+                {
+                    viewedResourceName = null;
+                    coverageCandidateKey = null;
+                    coverageScanIndex = 0;
+                }
+
+                StoreViewed(center);
+            }
+
+            resource = viewedResource;
+            storageOnly = viewedStorageOnly;
+            return resource != null;
+        }
+
+        private void StoreViewed(object center)
+        {
+            viewedResource = null;
+            viewedStorageOnly = false;
+            Building building = center == null ? null : GetConsumerProducer(center)?.building;
+            viewedForBuildingId = building == null ? 0L : building.GetID();
+            if (center == null)
+            {
+                return;
+            }
+
+            IReadOnlyList<Resource> resources = GetResources(center);
+            Resource match = null;
+            if (!string.IsNullOrEmpty(viewedResourceName))
+            {
+                for (int i = 0; i < resources.Count; i++)
+                {
+                    Resource resource = resources[i];
+                    if (resource != null && resource.name == viewedResourceName)
+                    {
+                        match = resource;
+                        break;
+                    }
+                }
+            }
+
+            if (match == null)
+            {
+                match = PrimaryResource(center);
+                viewedResourceName = null;
+            }
+
+            viewedResource = match;
+            viewedStorageOnly = IsStorageOnly(center, match);
+        }
+
+        private void SelectCoverageResource(Resource resource)
+        {
+            if (resource == null || resource.name == viewedResource?.name)
+            {
+                return;
+            }
+
+            viewedResourceName = resource.name;
+            coverageCandidateKey = null;
+            coverageScanIndex = 0;
+            StoreViewed(GetCenter());
+            WorldScripts.Inst?.visualizationManager?.MarkDirty();
+        }
+
+        private static string CoverageNameTip(bool viewing, bool storageOnly)
+        {
+            if (!viewing)
+            {
+                return "左键让地图只显示这种物资";
+            }
+
+            if (storageOnly)
+            {
+                return "地图正在显示这种物资\n它只存储，建筑不会上色";
+            }
+
+            return "地图正在显示这种物资\n半径内能到为绿，没路为红，半径外为黄";
+        }
+
+        private void AdvanceCoverageQueries(object center)
+        {
+            FlushCoveragePaint();
+            if (viewedResource == null || viewedStorageOnly)
+            {
+                return;
+            }
+
+            Building centerBuilding = GetConsumerProducer(center)?.building;
+            if (centerBuilding == null || !centerBuilding.IsValid())
+            {
+                return;
+            }
+
+            EnsureCoverageCandidates(center, viewedResource);
+            int count = coverageCandidates.Length;
+            if (count == 0)
+            {
+                return;
+            }
+
+            float radius = center is CollectionProductionLogic collection
+                ? collection.collectionRadius
+                : ((DistributionProductionLogic)center).distributionRadius;
+            bool towardCenter = center is CollectionProductionLogic;
+            Vector2 origin = centerBuilding.GetPosition().ToVector2XZ();
+            float radiusSquared = radius * radius;
+            int examined = 0;
+            int queries = 0;
+            bool changed = false;
+            int limit = Mathf.Min(count, 48);
+            while (examined < limit && queries < 2)
+            {
+                if (coverageScanIndex < 0 || coverageScanIndex >= count)
+                {
+                    coverageScanIndex = 0;
+                }
+
+                ConsumerProducer candidate = coverageCandidates[coverageScanIndex];
+                coverageScanIndex++;
+                examined++;
+                Building covered = candidate?.building;
+                if (covered == null || !covered.IsValidAndBuilt() || covered == centerBuilding)
+                {
+                    continue;
+                }
+
+                float distance = Vector2.SqrMagnitude(covered.GetPosition().ToVector2XZ() - origin);
+                if (distance > radiusSquared)
+                {
+                    continue;
+                }
+
+                Building source = towardCenter ? covered : centerBuilding;
+                Building destination = towardCenter ? centerBuilding : covered;
+                if (!RangeReachability.NeedsQuery(source, destination))
+                {
+                    continue;
+                }
+
+                if (RangeReachability.Query(source, destination))
+                {
+                    changed = true;
+                }
+
+                queries++;
+            }
+
+            if (!changed)
+            {
+                return;
+            }
+
+            coveragePaintPending = true;
+            FlushCoveragePaint();
+        }
+
+        private void FlushCoveragePaint()
+        {
+            if (!coveragePaintPending || Time.unscaledTime - lastCoveragePaint < 0.35f)
+            {
+                return;
+            }
+
+            coveragePaintPending = false;
+            lastCoveragePaint = Time.unscaledTime;
+            WorldScripts.Inst?.visualizationManager?.MarkDirty();
+        }
+
+        private void EnsureCoverageCandidates(object center, Resource viewed)
+        {
+            Building centerBuilding = GetConsumerProducer(center)?.building;
+            long centerId = centerBuilding == null ? 0L : centerBuilding.GetID();
+            string key = centerId + "\n" + viewed.name;
+            bool same = key == coverageCandidateKey;
+            if (same && Time.unscaledTime - coverageSnapshotTime < 2f)
+            {
+                return;
+            }
+
+            coverageCandidateKey = key;
+            coverageSnapshotTime = Time.unscaledTime;
+            if (!same)
+            {
+                coverageScanIndex = 0;
+            }
+
+            Registry registry = WorldScripts.Inst?.registry;
+            HashSet<ConsumerProducer> owners = null;
+            if (registry != null)
+            {
+                Dictionary<Resource, HashSet<ConsumerProducer>> groups = center is CollectionProductionLogic
+                    ? registry.producers
+                    : registry.consumers;
+                if (groups != null)
+                {
+                    groups.TryGetValue(viewed, out owners);
+                }
+            }
+
+            if (owners == null || owners.Count == 0)
+            {
+                coverageCandidates = Array.Empty<ConsumerProducer>();
+                return;
+            }
+
+            ConsumerProducer[] snapshot = new ConsumerProducer[owners.Count];
+            owners.CopyTo(snapshot);
+            coverageCandidates = snapshot;
+            if (coverageScanIndex >= snapshot.Length)
+            {
+                coverageScanIndex = 0;
+            }
+        }
+
+        private void EnsureHoverListener()
+        {
+            if (hoverRegistered || WorldScripts.Inst?.clickHandler == null)
+            {
+                return;
+            }
+
+            WorldScripts.Inst.clickHandler.AddMouseHoverListener(this);
+            hoverRegistered = true;
+        }
+
+        private void RemoveHoverListener()
+        {
+            if (!hoverRegistered)
+            {
+                return;
+            }
+
+            hoverRegistered = false;
+            WorldScripts.Inst?.clickHandler?.RemoveMouseHoverListener(this);
+        }
+
+        private static Building ClosestBuilding(RaycastHit[] hits)
+        {
+            Building closest = null;
+            float best = float.MaxValue;
+            for (int i = 0; i < hits.Length; i++)
+            {
+                RaycastHit hit = hits[i];
+                if (hit.collider == null || hit.distance >= best)
+                {
+                    continue;
+                }
+
+                ColliderInfo info = Helper.GetComponentInHierarchy<ColliderInfo>(hit.collider.gameObject);
+                if (info?.collidable is Building building)
+                {
+                    closest = building;
+                    best = hit.distance;
+                }
+            }
+
+            return closest;
+        }
+
+        private string DescribeBuildingCoverage(object center, Building covered)
+        {
+            Building centerBuilding = GetConsumerProducer(center)?.building;
+            if (centerBuilding == null || covered == null || covered == centerBuilding)
+            {
+                return null;
+            }
+
+            bool towardCenter = center is CollectionProductionLogic;
+            bool consumer = !towardCenter;
+            float radius = towardCenter
+                ? ((CollectionProductionLogic)center).collectionRadius
+                : ((DistributionProductionLogic)center).distributionRadius;
+            float distance = Vector2.SqrMagnitude(
+                covered.GetPosition().ToVector2XZ() - centerBuilding.GetPosition().ToVector2XZ());
+            bool inRange = distance <= radius * radius;
+            IReadOnlyList<Resource> resources = GetResources(center);
+            StringBuilder text = null;
+            for (int i = 0; i < resources.Count; i++)
+            {
+                Resource resource = resources[i];
+                if (resource == null || !RangeReachability.InRegistry(covered, resource, consumer))
+                {
+                    continue;
+                }
+
+                string status = CoverageStatus(center, centerBuilding, covered, resource, towardCenter, inRange);
+                if (text == null)
+                {
+                    text = new StringBuilder();
+                }
+                else
+                {
+                    text.Append('\n');
+                }
+
+                text.Append(resource.GetNameInGame());
+                text.Append('：');
+                text.Append(status);
+            }
+
+            return text?.ToString();
+        }
+
+        private static string CoverageStatus(
+            object center,
+            Building centerBuilding,
+            Building covered,
+            Resource resource,
+            bool towardCenter,
+            bool inRange)
+        {
+            if (IsStorageOnly(center, resource))
+            {
+                return "仅存储";
+            }
+
+            if (!inRange)
+            {
+                return "半径外";
+            }
+
+            Building source = towardCenter ? covered : centerBuilding;
+            Building destination = towardCenter ? centerBuilding : covered;
+            if (!RangeReachability.TryGet(source, destination, out bool canReach))
+            {
+                return "正在确认道路";
+            }
+
+            return canReach ? "能送到" : "没路";
+        }
+
+        private static Resource PrimaryResource(object center)
+        {
+            if (center is CollectionProductionLogic collection)
+            {
+                return collection.resource;
+            }
+
+            if (center is DistributionProductionLogic distribution)
+            {
+                return distribution.resource;
+            }
+
+            return null;
+        }
+
         private void DrawStorageArea(Rect area, object center)
         {
             IReadOnlyList<Resource> resources = GetResources(center);
+            TryGetCoverageResource(out Resource coverageResource, out bool coverageStorageOnly);
             float scale = Mathf.Max(0.75f, Screen.height / 1080f);
             float rowHeight = 31f * scale;
             float padding = 7f * scale;
@@ -1090,7 +1504,37 @@ namespace InfraSpaceMultiResourceLogistics
                 float capacityLeft = contentWidth - capacityWidth;
                 float maxCaption = Mathf.Max(36f * scale, capacityLeft - captionLeft - gap * 2f - 48f * scale);
                 captionWidth = Mathf.Min(captionWidth, maxCaption);
-                GUI.Label(new Rect(captionLeft, y, captionWidth, rowHeight), caption, labelStyle);
+                bool viewing = coverageResource != null && resource.name == coverageResource.name;
+                labelStyle.normal.textColor = viewing ? CoverageNameColor : Color.white;
+                Rect nameRect = new Rect(captionLeft, y, captionWidth, rowHeight);
+                if (viewing)
+                {
+                    Color previous = GUI.color;
+                    GUI.color = new Color(0.1f, 0.34f, 0.48f, 1f);
+                    GUI.DrawTexture(
+                        new Rect(
+                            nameRect.x - 3f * scale,
+                            nameRect.y + 4f * scale,
+                            nameRect.width + 6f * scale,
+                            nameRect.height - 8f * scale),
+                        Texture2D.whiteTexture);
+                    GUI.color = previous;
+                }
+
+                GUI.Label(nameRect, caption, labelStyle);
+                if (Event.current.type == EventType.MouseDown &&
+                    Event.current.button == 0 &&
+                    nameRect.Contains(Event.current.mousePosition))
+                {
+                    SelectCoverageResource(resource);
+                    Event.current.Use();
+                }
+
+                if (Event.current.type == EventType.Repaint &&
+                    nameRect.Contains(Event.current.mousePosition))
+                {
+                    storageHoverTip = CoverageNameTip(viewing, viewing && coverageStorageOnly);
+                }
 
                 float sliderLeft = captionLeft + captionWidth + gap;
                 float sliderWidth = Mathf.Max(36f * scale, capacityLeft - gap - sliderLeft);
@@ -1106,6 +1550,7 @@ namespace InfraSpaceMultiResourceLogistics
                     SetCapacity(center, resource, rounded);
                 }
 
+                capacityStyle.normal.textColor = Color.white;
                 GUI.Label(new Rect(capacityLeft, y, capacityWidth, rowHeight), rounded.ToString(), capacityStyle);
             }
 
@@ -1812,6 +2257,7 @@ namespace InfraSpaceMultiResourceLogistics
             activeSliderControlId = 0;
             activeScrollbarControlId = 0;
             radiusPlaced = false;
+            RemoveHoverListener();
         }
 
         private void OnDestroy()
@@ -1824,6 +2270,7 @@ namespace InfraSpaceMultiResourceLogistics
 
             activeSliderControlId = 0;
             activeScrollbarControlId = 0;
+            RemoveHoverListener();
             if (WorldScripts.Inst != null &&
                 WorldScripts.Inst.cameraMovement != null)
             {

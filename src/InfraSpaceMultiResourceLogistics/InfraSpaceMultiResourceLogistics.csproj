@@ -25,6 +25,7 @@
     <Reference Include="UnityEngine.CoreModule" HintPath="$(GameManagedPath)\UnityEngine.CoreModule.dll" Private="false" />
     <Reference Include="UnityEngine.IMGUIModule" HintPath="$(GameManagedPath)\UnityEngine.IMGUIModule.dll" Private="false" />
     <Reference Include="UnityEngine.InputLegacyModule" HintPath="$(GameManagedPath)\UnityEngine.InputLegacyModule.dll" Private="false" />
+    <Reference Include="UnityEngine.PhysicsModule" HintPath="$(GameManagedPath)\UnityEngine.PhysicsModule.dll" Private="false" />
     <Reference Include="UnityEngine.TextRenderingModule" HintPath="$(GameManagedPath)\UnityEngine.TextRenderingModule.dll" Private="false" />
     <Reference Include="UnityEngine.UIModule" HintPath="$(GameManagedPath)\UnityEngine.UIModule.dll" Private="false" />
     <Reference Include="UnityEngine.UI" HintPath="$(GameManagedPath)\UnityEngine.UI.dll" Private="false" />

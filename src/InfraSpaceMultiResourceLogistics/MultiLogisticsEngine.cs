@@ -29,6 +29,9 @@ namespace InfraSpaceMultiResourceLogistics
         private static readonly Dictionary<long, Dictionary<long, bool>> distributionReachable =
             new Dictionary<long, Dictionary<long, bool>>();
 
+        private static readonly Dictionary<long, Dictionary<long, int>> distributionReachMisses =
+            new Dictionary<long, Dictionary<long, int>>();
+
         private static int distributionQueriesArmedFrame = -1;
 
         private static readonly Dictionary<CenterLink, bool> roadBlocked = new Dictionary<CenterLink, bool>();
@@ -526,7 +529,6 @@ namespace InfraSpaceMultiResourceLogistics
             {
                 distributionQueriesArmedFrame = Time.frameCount;
                 pendingConsumers[source.GetID()] = candidates;
-                distributionReachable.Remove(source.GetID());
                 recheckIndex.Remove(source.GetID());
             }
         }
@@ -1078,12 +1080,22 @@ namespace InfraSpaceMultiResourceLogistics
             ConsumerProducer consumer)
         {
             Building destination = consumer?.building;
-            bool reachable = destination != null &&
-                             destination.IsValidAndBuilt() &&
-                             IsInRange(source.GetPosition().ToVector2XZ(), destination, center.distributionRadius) &&
-                             CanDeliverTo(source, destination);
-            RememberDistributionReach(source.GetID(), destination == null ? 0L : destination.GetID(), reachable);
-            if (reachable)
+            long centerId = source.GetID();
+            long buildingId = destination == null ? 0L : destination.GetID();
+            bool inRange = destination != null &&
+                           destination.IsValidAndBuilt() &&
+                           IsInRange(source.GetPosition().ToVector2XZ(), destination, center.distributionRadius);
+            // 离开半径立刻解开。连续两次寻路失败只保留仍在半径内、原先能到的连接。
+            if (!inRange)
+            {
+                ClearDistributionReach(centerId, buildingId);
+                UnlinkDistribution(center, consumer);
+                return;
+            }
+
+            bool reachable = CanDeliverTo(source, destination);
+            bool stable = RememberDistributionReach(centerId, buildingId, reachable);
+            if (stable)
             {
                 LinkDistribution(center, consumer);
                 return;
@@ -1245,11 +1257,11 @@ namespace InfraSpaceMultiResourceLogistics
             }
         }
 
-        private static void RememberDistributionReach(long centerId, long buildingId, bool reachable)
+        private static bool RememberDistributionReach(long centerId, long buildingId, bool reachable)
         {
             if (buildingId == 0L)
             {
-                return;
+                return false;
             }
 
             lock (ReachGate)
@@ -1260,22 +1272,62 @@ namespace InfraSpaceMultiResourceLogistics
                     distributionReachable[centerId] = results;
                 }
 
-                results[buildingId] = reachable;
+                if (!distributionReachMisses.TryGetValue(centerId, out Dictionary<long, int> misses))
+                {
+                    misses = new Dictionary<long, int>();
+                    distributionReachMisses[centerId] = misses;
+                }
+
+                if (!results.TryGetValue(buildingId, out bool previous))
+                {
+                    results[buildingId] = reachable;
+                    misses[buildingId] = reachable ? 0 : 1;
+                    return reachable;
+                }
+
+                if (reachable)
+                {
+                    results[buildingId] = true;
+                    misses[buildingId] = 0;
+                    return true;
+                }
+
+                int streak = misses.TryGetValue(buildingId, out int count) ? count + 1 : 1;
+                misses[buildingId] = streak;
+                if (!previous && streak >= 1)
+                {
+                    results[buildingId] = false;
+                    return false;
+                }
+
+                if (streak >= 2)
+                {
+                    results[buildingId] = false;
+                    return false;
+                }
+
+                return previous;
             }
         }
 
-        internal static bool IsKnownUnreachable(Building center, Building building)
+        private static void ClearDistributionReach(long centerId, long buildingId)
         {
-            if (center == null || building == null)
+            if (buildingId == 0L)
             {
-                return false;
+                return;
             }
 
             lock (ReachGate)
             {
-                return distributionReachable.TryGetValue(center.GetID(), out Dictionary<long, bool> results) &&
-                       results.TryGetValue(building.GetID(), out bool reachable) &&
-                       !reachable;
+                if (distributionReachable.TryGetValue(centerId, out Dictionary<long, bool> results))
+                {
+                    results.Remove(buildingId);
+                }
+
+                if (distributionReachMisses.TryGetValue(centerId, out Dictionary<long, int> misses))
+                {
+                    misses.Remove(buildingId);
+                }
             }
         }
 

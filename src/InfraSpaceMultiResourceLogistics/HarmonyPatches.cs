@@ -209,11 +209,9 @@ namespace InfraSpaceMultiResourceLogistics
 
     internal static class RangeReachability
     {
-        private const float CacheSeconds = 1f;
+        private const float CacheSeconds = 4f;
 
         private static readonly Dictionary<long, Reachability> Cache = new Dictionary<long, Reachability>();
-
-        private static long cachedCenterId = long.MinValue;
 
         private static bool loggedFailure;
 
@@ -222,46 +220,37 @@ namespace InfraSpaceMultiResourceLogistics
         private struct Reachability
         {
             public bool CanReach;
+            public int Misses;
             public float Time;
+            public bool Known;
         }
 
-        // 绿色表示已覆盖。货车从 source 开不到 destination 时改成红色。
-        internal static void PaintIfUnreachable(
-            Building source,
-            Building destination,
-            Building covered,
-            ref Material result)
-        {
-            VisualizationManager visualization = WorldScripts.Inst?.visualizationManager;
-            if (visualization == null ||
-                source == null ||
-                destination == null ||
-                covered == null ||
-                result != visualization.scaleMatGreen)
-            {
-                return;
-            }
-
-            Material unreachable = UnreachableMaterial(visualization);
-            if (unreachable != null && !CanTruckReach(source, destination, covered))
-            {
-                result = unreachable;
-            }
-        }
-
-        // 不再挂上配送关系后，范围内无路的建筑会变成黄色。黄色只表示范围外，这里改回红色。
-        internal static void PaintUnlinkedInRange(
+        // 只给当前查看的物资上色。不读连接列表，避免多种物资的扫描进度把颜色带跑。
+        internal static void Paint(
             Building center,
             Building covered,
+            Resource resource,
+            bool storageOnly,
+            bool relevant,
+            bool towardCenter,
             float radius,
             ref Material result)
         {
             VisualizationManager visualization = WorldScripts.Inst?.visualizationManager;
-            if (visualization == null ||
-                center == null ||
-                covered == null ||
-                result != visualization.scaleMatYellow)
+            if (visualization == null || center == null || covered == null)
             {
+                return;
+            }
+
+            if (covered == center)
+            {
+                result = visualization.selectedDefaultMat;
+                return;
+            }
+
+            if (resource == null || storageOnly || !relevant)
+            {
+                result = null;
                 return;
             }
 
@@ -269,6 +258,21 @@ namespace InfraSpaceMultiResourceLogistics
                 covered.GetPosition().ToVector2XZ() - center.GetPosition().ToVector2XZ());
             if (distance > radius * radius)
             {
+                result = visualization.scaleMatYellow;
+                return;
+            }
+
+            Building source = towardCenter ? covered : center;
+            Building destination = towardCenter ? center : covered;
+            if (!TryGet(source, destination, out bool canReach))
+            {
+                result = null;
+                return;
+            }
+
+            if (canReach)
+            {
+                result = visualization.scaleMatGreen;
                 return;
             }
 
@@ -277,6 +281,87 @@ namespace InfraSpaceMultiResourceLogistics
             {
                 result = unreachable;
             }
+        }
+
+        internal static bool InRegistry(Building building, Resource resource, bool consumer)
+        {
+            ConsumerProducer owner = building?.consumerProducer;
+            Registry registry = WorldScripts.Inst?.registry;
+            if (owner == null || resource == null || registry == null)
+            {
+                return false;
+            }
+
+            Dictionary<Resource, HashSet<ConsumerProducer>> groups =
+                consumer ? registry.consumers : registry.producers;
+            return groups != null &&
+                   groups.TryGetValue(resource, out HashSet<ConsumerProducer> owners) &&
+                   owners != null &&
+                   owners.Contains(owner);
+        }
+
+        internal static bool TryGet(Building source, Building destination, out bool canReach)
+        {
+            canReach = false;
+            if (!Cache.TryGetValue(Key(source, destination), out Reachability cached) || !cached.Known)
+            {
+                return false;
+            }
+
+            canReach = cached.CanReach;
+            return true;
+        }
+
+        internal static bool NeedsQuery(Building source, Building destination)
+        {
+            if (source == null || destination == null)
+            {
+                return false;
+            }
+
+            if (!Cache.TryGetValue(Key(source, destination), out Reachability cached) || !cached.Known)
+            {
+                return true;
+            }
+
+            return Time.unscaledTime - cached.Time >= CacheSeconds;
+        }
+
+        // 返回值表示已经显示的颜色需要刷新。单次失败不把原来能到的结果改成没路。
+        internal static bool Query(Building source, Building destination)
+        {
+            if (source == null || destination == null)
+            {
+                return false;
+            }
+
+            long key = Key(source, destination);
+            Cache.TryGetValue(key, out Reachability cached);
+            bool canReach = QueryTruckPath(source, destination);
+            bool published = canReach;
+            int misses = 0;
+            if (cached.Known && cached.CanReach && !canReach && cached.Misses < 1)
+            {
+                published = true;
+                misses = cached.Misses + 1;
+            }
+
+            bool changed = !cached.Known || cached.CanReach != published;
+            Cache[key] = new Reachability
+            {
+                CanReach = published,
+                Misses = misses,
+                Time = Time.unscaledTime,
+                Known = true,
+            };
+            return changed;
+        }
+
+        private static long Key(Building source, Building destination)
+        {
+            long sourceId = source == null ? 0L : source.GetID();
+            long destinationId = destination == null ? 0L : destination.GetID();
+            return (sourceId * 397) ^ destinationId;
         }
 
         private static Material UnreachableMaterial(VisualizationManager visualization)
@@ -296,27 +381,6 @@ namespace InfraSpaceMultiResourceLogistics
                 color = new Color(1f, 0.08f, 0.06f, 1f),
             };
             return unreachableMaterial;
-        }
-
-        private static bool CanTruckReach(Building source, Building destination, Building covered)
-        {
-            long centerId = source.GetID() == covered.GetID() ? destination.GetID() : source.GetID();
-            if (centerId != cachedCenterId)
-            {
-                Cache.Clear();
-                cachedCenterId = centerId;
-            }
-
-            long coveredId = covered.GetID();
-            float now = Time.unscaledTime;
-            if (Cache.TryGetValue(coveredId, out Reachability cached) && now - cached.Time < CacheSeconds)
-            {
-                return cached.CanReach;
-            }
-
-            bool canReach = QueryTruckPath(source, destination);
-            Cache[coveredId] = new Reachability { CanReach = canReach, Time = now };
-            return canReach;
         }
 
         private static bool QueryTruckPath(Building source, Building destination)
@@ -355,37 +419,74 @@ namespace InfraSpaceMultiResourceLogistics
     [HarmonyPatch(typeof(CollectionInfoPanel), nameof(CollectionInfoPanel.GetCustomVisualizationMat))]
     internal static class CollectionRangeReachabilityPatch
     {
-        // 搜集货车从生产建筑开往搜集中心。黄色仍表示未覆盖。
+        // 搜集货车从生产建筑开往搜集中心。地图只显示当前查看的那种产出。
         private static void Postfix(
+            CollectionInfoPanel __instance,
             Building building,
             ref Material __result,
             CollectionProductionLogic ___collectionCenter)
         {
-            Building center = ___collectionCenter?.consumerProducer?.building;
-            RangeReachability.PaintIfUnreachable(building, center, building, ref __result);
+            if (__instance == null || !__instance.isActiveAndEnabled || ___collectionCenter == null || building == null)
+            {
+                return;
+            }
+
+            Resource viewed = ___collectionCenter.resource;
+            bool storageOnly = CenterState.IsStorageOnly(___collectionCenter, viewed);
+            NativeCenterPanelController controller = __instance.GetComponent<NativeCenterPanelController>();
+            if (controller != null &&
+                controller.TryGetCoverageResource(out Resource selected, out bool selectedStorageOnly))
+            {
+                viewed = selected;
+                storageOnly = selectedStorageOnly;
+            }
+
+            RangeReachability.Paint(
+                ___collectionCenter.consumerProducer?.building,
+                building,
+                viewed,
+                storageOnly,
+                RangeReachability.InRegistry(building, viewed, false),
+                true,
+                ___collectionCenter.collectionRadius,
+                ref __result);
         }
     }
 
     [HarmonyPatch(typeof(DistributionInfoPanel), nameof(DistributionInfoPanel.GetCustomVisualizationMat))]
     internal static class DistributionRangeReachabilityPatch
     {
-        // 配送货车从配送中心开往消费建筑。范围外为黄色，范围内无路为红色。
+        // 配送货车从配送中心开往消费建筑。地图只显示当前查看的那种消耗。
         private static void Postfix(
+            DistributionInfoPanel __instance,
             Building building,
             ref Material __result,
             DistributionProductionLogic ___distributionCenter)
         {
-            Building center = ___distributionCenter?.consumerProducer?.building;
-            RangeReachability.PaintIfUnreachable(center, building, building, ref __result);
-            if (___distributionCenter != null &&
-                MultiResourceLogisticsEngine.IsKnownUnreachable(center, building))
+            if (__instance == null || !__instance.isActiveAndEnabled || ___distributionCenter == null || building == null)
             {
-                RangeReachability.PaintUnlinkedInRange(
-                    center,
-                    building,
-                    ___distributionCenter.distributionRadius,
-                    ref __result);
+                return;
             }
+
+            Resource viewed = ___distributionCenter.resource;
+            bool storageOnly = CenterState.IsStorageOnly(___distributionCenter, viewed);
+            NativeCenterPanelController controller = __instance.GetComponent<NativeCenterPanelController>();
+            if (controller != null &&
+                controller.TryGetCoverageResource(out Resource selected, out bool selectedStorageOnly))
+            {
+                viewed = selected;
+                storageOnly = selectedStorageOnly;
+            }
+
+            RangeReachability.Paint(
+                ___distributionCenter.consumerProducer?.building,
+                building,
+                viewed,
+                storageOnly,
+                RangeReachability.InRegistry(building, viewed, true),
+                false,
+                ___distributionCenter.distributionRadius,
+                ref __result);
         }
     }
 
