@@ -6,14 +6,8 @@ using UnityEngine;
 
 namespace InfraSpaceConstructionTools
 {
-    internal sealed class BlueprintCopySession
+    internal sealed class BlueprintCopySession : IBatchPlacementSession
     {
-        internal enum CommitResult
-        {
-            Success,
-            Invalid
-        }
-
         private sealed class BuildingCopy
         {
             internal Building Source;
@@ -46,37 +40,62 @@ namespace InfraSpaceConstructionTools
             };
 
         private readonly List<BuildingCopy> buildings = new List<BuildingCopy>();
+        private readonly List<Building> ghostBuildings = new List<Building>();
         private readonly List<NodeCopy> nodes = new List<NodeCopy>();
         private readonly List<NetEdge> ghostEdges = new List<NetEdge>();
         private readonly List<EdgeCopy> edgeCopies = new List<EdgeCopy>();
         private readonly List<BuildingConnector> ghostPowerLines = new List<BuildingConnector>();
         private readonly Dictionary<BuildingGroup, List<Building>> copiedGroups =
             new Dictionary<BuildingGroup, List<Building>>();
+        private readonly IReadOnlyList<Building> ignoredBuildings;
         private readonly Vector3 anchor;
         private readonly Vector3 pivot;
+        private readonly bool allowRotation;
+        private readonly bool checkBuildCosts;
+        private readonly bool validateRoads;
+        private readonly bool canCommit;
+        private readonly bool copyConfiguration;
+        private readonly bool includePowerLines;
         private int quarterTurns;
         private bool finished;
 
-        internal event Action Committed;
+        internal Vector3 LastDelta { get; private set; }
 
-        internal bool IsPreviewValid { get; private set; }
+        public bool IsPreviewValid { get; private set; }
 
-        internal int RoadNodeCount => ghostEdges.Count;
+        public int RoadNodeCount => ghostEdges.Count;
 
         internal BlueprintCopySession(
             IEnumerable<Building> sourceBuildings,
             IReadOnlyList<RoadPiece> roads,
-            Vector3 anchor)
+            Vector3 anchor,
+            bool allowRotation = true,
+            bool checkBuildCosts = true,
+            IReadOnlyList<Building> ignoredBuildings = null,
+            bool validateRoads = true,
+            bool canCommit = true,
+            bool copyConfiguration = true,
+            bool includePowerLines = true)
         {
             this.anchor = anchor;
+            this.allowRotation = allowRotation;
+            this.checkBuildCosts = checkBuildCosts;
+            this.ignoredBuildings = ignoredBuildings;
+            this.validateRoads = validateRoads;
+            this.canCommit = canCommit;
+            this.copyConfiguration = copyConfiguration;
+            this.includePowerLines = includePowerLines;
             CreateBuildingGhosts(sourceBuildings);
-            CreatePowerLines();
+            if (includePowerLines)
+            {
+                CreatePowerLines();
+            }
             CreateRoadGhosts(roads);
             pivot = ComputePivot();
             IsPreviewValid = ValidatePreview();
         }
 
-        internal void UpdatePreview(Vector2 mousePosition)
+        public void UpdatePreview(Vector2 mousePosition)
         {
             if (finished ||
                 !AreaMoveController.TryGetTerrainPosition(mousePosition, out Vector3 current))
@@ -84,8 +103,22 @@ namespace InfraSpaceConstructionTools
                 return;
             }
 
-            ReadRotation();
-            Vector3 delta = GetDelta(current);
+            if (allowRotation)
+            {
+                ReadRotation();
+            }
+
+            Place(GetDelta(current));
+        }
+
+        internal void Place(Vector3 delta)
+        {
+            if (finished)
+            {
+                return;
+            }
+
+            LastDelta = delta;
             foreach (BuildingCopy copy in buildings)
             {
                 copy.Ghost.SetRotation(copy.Source.GetRotationY() + quarterTurns * 90f);
@@ -107,16 +140,15 @@ namespace InfraSpaceConstructionTools
 
             RefreshPowerLines();
             Physics.SyncTransforms();
-            IsPreviewValid = ValidatePreview() && CanPay(GetTotalCosts());
+            IsPreviewValid =
+                ValidatePreview() &&
+                (!checkBuildCosts || BatchPlacement.CanPay(GetTotalCosts()));
         }
 
         private Vector3 GetDelta(Vector3 current)
         {
-            Vector3 raw = current - anchor;
-            bool fineTune =
-                Input.GetKey(KeyCode.LeftShift) ||
-                Input.GetKey(KeyCode.RightShift);
-            if (fineTune || WorldScripts.Inst.gridManager.GetGridState() == GridStates.Off)
+            Vector3 raw = BatchPlacement.GetRawDelta(anchor, current);
+            if (BatchPlacement.ShouldUseRawTranslation())
             {
                 return raw;
             }
@@ -192,18 +224,18 @@ namespace InfraSpaceConstructionTools
                 TransformPoint(bezier.d, delta));
         }
 
-        internal CommitResult TryCommit()
+        public BatchCommitResult TryCommit()
         {
-            if (finished)
+            if (finished || !canCommit)
             {
-                return CommitResult.Invalid;
+                return BatchCommitResult.Invalid;
             }
 
             List<ResourceCost> costs = GetTotalCosts();
-            if (!ValidatePreview() || !CanPay(costs))
+            if (!ValidatePreview() || !BatchPlacement.CanPay(costs))
             {
                 IsPreviewValid = false;
-                return CommitResult.Invalid;
+                return BatchCommitResult.Invalid;
             }
 
             try
@@ -236,22 +268,21 @@ namespace InfraSpaceConstructionTools
 
                 RefreshPowerLines();
 
-                Pay(costs);
+                BatchPlacement.Pay(costs);
                 WorldScripts.Inst.powerManager.SetNetworksDirty();
                 PathFinder.SetRoadNetworkDirty();
                 finished = true;
-                Committed?.Invoke();
-                return CommitResult.Success;
+                return BatchCommitResult.Success;
             }
             catch (Exception exception)
             {
                 Debug.LogError($"[AreaMove] Blueprint placement failed: {exception}");
                 IsPreviewValid = false;
-                return CommitResult.Invalid;
+                return BatchCommitResult.Invalid;
             }
         }
 
-        internal void Cancel()
+        public void Cancel()
         {
             if (finished)
             {
@@ -284,6 +315,7 @@ namespace InfraSpaceConstructionTools
 
             ghostPowerLines.Clear();
             ghostEdges.Clear();
+            ghostBuildings.Clear();
             buildings.Clear();
             nodes.Clear();
             finished = true;
@@ -299,7 +331,11 @@ namespace InfraSpaceConstructionTools
                     source.GetPosition(),
                     source.GetRotationY());
                 ghost.SetIsBuilt(isBuilt: false);
-                CopyBuildingConfiguration(source, ghost);
+                ghostBuildings.Add(ghost);
+                if (copyConfiguration)
+                {
+                    CopyBuildingConfiguration(source, ghost);
+                }
                 buildings.Add(new BuildingCopy
                 {
                     Source = source,
@@ -444,32 +480,14 @@ namespace InfraSpaceConstructionTools
                 }
             }
 
-            SetBuildingRepresentationsActive(false);
-            foreach (BuildingCopy copy in buildings)
+            if (!BatchPlacement.CanPlaceBuildings(ghostBuildings, ignoredBuildings))
             {
-                copy.Ghost.SetRepresentationActive(isActive: true);
-                Physics.SyncTransforms();
-                bool canPlace = copy.Ghost.CanPlace(checkCollision: true);
-                copy.Ghost.SetRepresentationActive(isActive: false);
-                if (!canPlace)
-                {
-                    SetBuildingRepresentationsActive(true);
-                    return false;
-                }
+                return false;
             }
 
-            SetBuildingRepresentationsActive(true);
             return nodes.All(copy =>
                        WorldScripts.Inst.world.IsPointInPlayableArea(copy.Ghost.GetPosition())) &&
-                   ghostEdges.All(edge => edge.DoesWork());
-        }
-
-        private void SetBuildingRepresentationsActive(bool active)
-        {
-            foreach (BuildingCopy copy in buildings)
-            {
-                copy.Ghost.SetRepresentationActive(active);
-            }
+                   (!validateRoads || ghostEdges.All(edge => edge.DoesWork()));
         }
 
         private void CreateBuildingGroups()
@@ -533,51 +551,16 @@ namespace InfraSpaceConstructionTools
             Dictionary<Resource, int> totals = new Dictionary<Resource, int>();
             foreach (BuildingCopy copy in buildings)
             {
-                AddCosts(totals, copy.Ghost.GetDescription().GetMultipliedCosts(1));
+                BatchPlacement.AddCosts(totals, copy.Ghost.GetDescription().GetMultipliedCosts(1));
             }
 
             foreach (NetEdge edge in ghostEdges)
             {
-                AddCosts(totals, edge.GetPrice());
+                BatchPlacement.AddCosts(totals, edge.GetPrice());
             }
 
             return totals.Select(pair => new ResourceCost(pair.Key, pair.Value)).ToList();
         }
 
-        private static void AddCosts(
-            Dictionary<Resource, int> totals,
-            IEnumerable<ResourceCost> costs)
-        {
-            foreach (ResourceCost cost in costs)
-            {
-                totals[cost.resource] = totals.TryGetValue(cost.resource, out int amount)
-                    ? amount + cost.amount
-                    : cost.amount;
-            }
-        }
-
-        private static bool CanPay(IReadOnlyCollection<ResourceCost> costs)
-        {
-            return CanSkipPay() || WorldScripts.Inst.resourceManager.CanPay(costs);
-        }
-
-        private static bool CanSkipPay()
-        {
-            return WorldScripts.Inst.worldSettings.noBuildingCosts ||
-                   !WorldScripts.Inst.debugPanel.buildCostsButton.isOn;
-        }
-
-        private static void Pay(IEnumerable<ResourceCost> costs)
-        {
-            if (CanSkipPay())
-            {
-                return;
-            }
-
-            foreach (ResourceCost cost in costs)
-            {
-                WorldScripts.Inst.resourceManager.AddResource(cost.resource, -cost.amount);
-            }
-        }
     }
 }

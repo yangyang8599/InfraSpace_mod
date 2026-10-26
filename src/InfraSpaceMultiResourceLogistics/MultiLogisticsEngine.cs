@@ -27,8 +27,7 @@ namespace InfraSpaceMultiResourceLogistics
             EnsureConsumables(center.consumerProducer, CenterState.GetResources(center));
             RefreshCollectionRoadLinks(center);
             int departures = ForwardToDistributionCenters(center, MaxDeparturesPerUpdate);
-            if (CenterState.GetResources(center).Count > 1 &&
-                departures < MaxDeparturesPerUpdate)
+            if (departures < MaxDeparturesPerUpdate)
             {
                 PullFromProducers(center, MaxDeparturesPerUpdate - departures);
             }
@@ -44,6 +43,131 @@ namespace InfraSpaceMultiResourceLogistics
 
             EnsureConsumables(center.consumerProducer, CenterState.GetResources(center));
             SendFromDistribution(center);
+        }
+
+        [ThreadStatic]
+        private static List<Pair<ConsumerProducer, float>> publicConsumers;
+
+        internal static void UpdateProducerOutgoing(ConsumerProducer producer)
+        {
+            Building building = producer?.building;
+            if (building == null || producer.productionLogic == null)
+            {
+                return;
+            }
+
+            if ((Old.GetSimulator().simulationFrame + building.GetID()) % 50 != 0)
+            {
+                return;
+            }
+
+            List<Resource> producables = producer.productionLogic.GetProducables();
+            if (producables == null || producer.outgoingStorage == null)
+            {
+                return;
+            }
+
+            bool laneBlocked = building.outgoingLane != null &&
+                               !building.outgoingLane.CanPushOntoLane(true);
+            int index = 0;
+            foreach (Resource resource in producables)
+            {
+                if (index >= producer.outgoingStorage.Length)
+                {
+                    break;
+                }
+
+                PipeComponent pipe = building.GetPipeComponentForResource(resource);
+                if (pipe != null)
+                {
+                    int moved = pipe.PutIntoComponent(producer.outgoingStorage[index]);
+                    producer.outgoingStorage[index] -= moved;
+                }
+                else if (!laneBlocked &&
+                         StorageHasOrder(producer, index, resource, out int orderAmount) &&
+                         !ReserveForCollection(producer, resource, orderAmount) &&
+                         TrySuggestPublicDelivery(producer, resource, orderAmount))
+                {
+                    break;
+                }
+
+                index++;
+            }
+        }
+
+        private static bool StorageHasOrder(
+            ConsumerProducer producer,
+            int index,
+            Resource resource,
+            out int orderAmount)
+        {
+            orderAmount = ConsumerProducer.GetOrderAmount(resource);
+            return orderAmount > 0 && producer.outgoingStorage[index] >= orderAmount;
+        }
+
+        private static bool ReserveForCollection(
+            ConsumerProducer producer,
+            Resource resource,
+            int orderAmount)
+        {
+            if (!producer.connectedCollectionCenters.TryGetValue(
+                    resource,
+                    out List<CollectionProductionLogic> centers) ||
+                centers == null ||
+                centers.Count == 0)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < centers.Count; i++)
+            {
+                CollectionProductionLogic center = centers[i];
+                ConsumerProducer storage = center?.consumerProducer;
+                if (storage != null &&
+                    HasCapacity(storage, resource, CenterState.GetCapacity(center, resource), orderAmount))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TrySuggestPublicDelivery(
+            ConsumerProducer producer,
+            Resource resource,
+            int orderAmount)
+        {
+            if (publicConsumers == null)
+            {
+                publicConsumers = new List<Pair<ConsumerProducer, float>>();
+            }
+
+            WorldScripts.Inst.orderManager.GetInterestedConsumers(resource, publicConsumers, producer);
+            foreach (Pair<ConsumerProducer, float> candidate in publicConsumers.OrderBy(pair =>
+                         producer.GetConsumptionPriorityQuick(pair.first, pair.second)))
+            {
+                if (candidate.second <= 0f ||
+                    candidate.first?.building == null ||
+                    candidate.first.productionLogic is CollectionProductionLogic)
+                {
+                    continue;
+                }
+
+                List<PathPart> path = PathFinderFacadeRoads.GetPath(
+                    producer.building,
+                    candidate.first.building);
+                if (path == null)
+                {
+                    continue;
+                }
+
+                WorldScripts.Inst.orderManager.SuggestDelivery(
+                    new DeliverySuggestion(producer, candidate.first, resource, orderAmount, path));
+                return true;
+            }
+
+            return false;
         }
 
         private struct ScoredDemand

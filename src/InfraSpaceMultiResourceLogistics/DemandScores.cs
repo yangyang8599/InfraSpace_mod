@@ -57,11 +57,6 @@ namespace InfraSpaceMultiResourceLogistics
             float priority,
             Resource resource)
         {
-            if (center != null)
-            {
-                center.UpdateRequestStatus(consumer, priority);
-            }
-
             if (center?.consumerProducer?.building == null ||
                 consumer?.building == null ||
                 resource == null)

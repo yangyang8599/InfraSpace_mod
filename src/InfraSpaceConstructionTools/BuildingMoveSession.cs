@@ -5,35 +5,27 @@ using UnityEngine;
 
 namespace InfraSpaceConstructionTools
 {
-    internal sealed class BuildingMoveSession
+    internal sealed class BuildingMoveSession : IBatchPlacementSession
     {
-        internal enum CommitResult
-        {
-            Success,
-            Invalid
-        }
-
         private sealed class Snapshot
         {
             internal Building Building;
             internal Vector3 Position;
-            internal Quaternion VisualRotation;
             internal float RotationY;
             internal Vector3 TargetPosition;
         }
 
         private readonly List<Snapshot> snapshots;
+        private readonly List<Building> movingBuildings;
         private readonly List<RoadPiece> roadPieces;
-        private readonly List<NetworkClipper.Preview> roadPreviews;
         private readonly Vector3 anchor;
+        private BlueprintCopySession previewSession;
         private Vector3 lastDelta;
         private bool finished;
 
-        internal event Action Committed;
+        public bool IsPreviewValid { get; private set; }
 
-        internal bool IsPreviewValid { get; private set; }
-
-        internal int RoadNodeCount => roadPieces.Count;
+        public int RoadNodeCount => roadPieces.Count;
 
         internal BuildingMoveSession(
             IEnumerable<Building> buildings,
@@ -47,80 +39,86 @@ namespace InfraSpaceConstructionTools
                 {
                     Building = building,
                     Position = building.GetPosition(),
-                    VisualRotation = building.representation.transform.rotation,
                     RotationY = building.GetRotationY(),
                     TargetPosition = building.GetPosition()
                 })
                 .ToList();
+            movingBuildings = snapshots.Select(snapshot => snapshot.Building).ToList();
             roadPieces = roads.ToList();
-            roadPreviews = NetworkClipper.CreatePreviews(roadPieces);
-            IsPreviewValid = true;
+            BeginPreview(Vector3.zero);
         }
 
-        internal void UpdatePreview(Vector2 mousePosition)
+        public void UpdatePreview(Vector2 mousePosition)
         {
-            if (finished ||
-                !AreaMoveController.TryGetTerrainPosition(mousePosition, out Vector3 current))
+            if (finished)
             {
                 return;
             }
 
-            lastDelta = GetDelta(current);
-            foreach (NetworkClipper.Preview preview in roadPreviews)
-            {
-                preview.Place(lastDelta);
-            }
+            previewSession.UpdatePreview(mousePosition);
+            lastDelta = previewSession.LastDelta;
 
             foreach (Snapshot snapshot in snapshots)
             {
                 snapshot.TargetPosition = snapshot.Position + lastDelta;
-                snapshot.Building?.SetPosition(snapshot.TargetPosition, doneByComputer: true);
             }
 
+            SetSourcesVisible(false);
             Physics.SyncTransforms();
-            IsPreviewValid = ValidateTargets();
+            IsPreviewValid =
+                previewSession.IsPreviewValid &&
+                ValidateTargets() &&
+                CanPay(out _);
         }
 
-        internal CommitResult TryCommit()
+        public BatchCommitResult TryCommit()
         {
             if (finished || !IsPreviewValid)
             {
-                return CommitResult.Invalid;
+                return BatchCommitResult.Invalid;
             }
 
             if (!HasMoved())
             {
-                RestorePreviewVisuals();
+                EndPreview();
                 finished = true;
-                Committed?.Invoke();
-                return CommitResult.Success;
+                return BatchCommitResult.Success;
             }
 
-            RestorePreviewVisuals();
             if (!CanPay(out List<ResourceCost> costs))
             {
-                RestoreRoadPreviews();
-                return CommitResult.Invalid;
+                IsPreviewValid = false;
+                return BatchCommitResult.Invalid;
             }
 
+            System.Diagnostics.Stopwatch timer = System.Diagnostics.Stopwatch.StartNew();
+            EndPreview();
+            long previewCleanupMs = timer.ElapsedMilliseconds;
             HashSet<Building> unbuilt = new HashSet<Building>();
             try
             {
                 if (!CommitBuildings(unbuilt))
                 {
-                    RestoreRoadPreviews();
-                    return CommitResult.Invalid;
+                    BeginPreview(lastDelta);
+                    return BatchCommitResult.Invalid;
                 }
 
+                long buildingsMs = timer.ElapsedMilliseconds;
                 NetworkClipper.Commit(roadPieces, lastDelta);
+                long networkMs = timer.ElapsedMilliseconds;
                 RefreshBuildingGround();
-                ReconnectSideRoads();
+                ReconnectBuildingNetworks();
+                long refreshMs = timer.ElapsedMilliseconds;
                 WorldScripts.Inst.powerManager.SetNetworksDirty();
                 PathFinder.SetRoadNetworkDirty();
-                Pay(costs);
+                BatchPlacement.Pay(costs);
+                timer.Stop();
+                Debug.Log(
+                    $"[AreaMove] Move commit {timer.ElapsedMilliseconds} ms " +
+                    $"(preview {previewCleanupMs}, buildings {buildingsMs - previewCleanupMs}, " +
+                    $"network {networkMs - buildingsMs}, refresh {refreshMs - networkMs})");
                 finished = true;
-                Committed?.Invoke();
-                return CommitResult.Success;
+                return BatchCommitResult.Success;
             }
             catch (Exception exception)
             {
@@ -131,22 +129,22 @@ namespace InfraSpaceConstructionTools
                 }
                 else
                 {
-                    RestoreBuildingVisuals();
+                    SetSourcesVisible(true);
                 }
 
-                RestoreRoadPreviews();
-                return CommitResult.Invalid;
+                BeginPreview(lastDelta);
+                return BatchCommitResult.Invalid;
             }
         }
 
-        internal void Cancel()
+        public void Cancel()
         {
             if (finished)
             {
                 return;
             }
 
-            RestorePreviewVisuals();
+            EndPreview();
             finished = true;
         }
 
@@ -183,6 +181,10 @@ namespace InfraSpaceConstructionTools
 
         private void RefreshBuildingGround()
         {
+            bool hasBounds = false;
+            bool affectsTerrain = false;
+            Bounds previousArea = default(Bounds);
+            Bounds currentArea = default(Bounds);
             foreach (Snapshot snapshot in snapshots)
             {
                 Building building = snapshot.Building;
@@ -193,53 +195,46 @@ namespace InfraSpaceConstructionTools
 
                 Bounds current = building.GetBounds();
                 Bounds previous = new Bounds(snapshot.Position, current.size);
-                previous.Expand(4f);
-                current.Expand(4f);
-                if (building.GetDescription().doesAffectTerrain)
+                if (!hasBounds)
                 {
-                    TerrainAdaptation.UpdateTerrainAdaptation(previous);
-                    building.UpdateTerrainAdaption(updateTerrain: true);
+                    previousArea = previous;
+                    currentArea = current;
+                    hasBounds = true;
+                }
+                else
+                {
+                    previousArea.Encapsulate(previous);
+                    currentArea.Encapsulate(current);
                 }
 
-                WorldScripts.Inst.world.UpdateTerraformablesDetail(previous, remove: false);
-                WorldScripts.Inst.world.UpdateTerraformablesDetail(current, remove: true);
-                InfraSpaceCore.GetGrassRemovalModule().UpdateTerrainDetail(previous, immediately: true);
-                InfraSpaceCore.GetGrassRemovalModule().UpdateTerrainDetail(current, immediately: true);
+                affectsTerrain |= building.GetDescription().doesAffectTerrain;
+            }
+
+            if (!hasBounds)
+            {
+                return;
+            }
+
+            previousArea.Expand(4f);
+            currentArea.Expand(4f);
+            WorldScripts.Inst.world.UpdateTerraformablesDetail(previousArea, remove: false);
+            WorldScripts.Inst.world.UpdateTerraformablesDetail(currentArea, remove: true);
+            InfraSpaceCore.GetGrassRemovalModule().UpdateTerrainDetail(previousArea, immediately: true);
+            InfraSpaceCore.GetGrassRemovalModule().UpdateTerrainDetail(currentArea, immediately: true);
+            if (affectsTerrain)
+            {
+                TerrainAdaptation.UpdateTerrainAdaptation(previousArea);
+                TerrainAdaptation.UpdateTerrainAdaptation(currentArea);
             }
         }
 
-        private void ReconnectSideRoads()
+        private void ReconnectBuildingNetworks()
         {
             foreach (Snapshot snapshot in snapshots)
             {
                 snapshot.Building?.UpdateSideRoad(doneByComputer: true, force: true);
+                snapshot.Building?.UpdateSidePipes(doneByComputer: true, force: true);
             }
-        }
-
-        private Vector3 GetDelta(Vector3 current)
-        {
-            Vector3 raw = current - anchor;
-            bool fineTune =
-                Input.GetKey(KeyCode.LeftShift) ||
-                Input.GetKey(KeyCode.RightShift);
-            if (fineTune || snapshots.Count == 0)
-            {
-                if (fineTune || WorldScripts.Inst.gridManager.GetGridState() == GridStates.Off)
-                {
-                    return raw;
-                }
-
-                return WorldScripts.Inst.gridManager.SnapToGridCell(anchor + raw) -
-                       WorldScripts.Inst.gridManager.SnapToGridCell(anchor);
-            }
-
-            Snapshot reference = snapshots[0];
-            Vector3 desired = reference.Position + raw;
-            Vector3 snapped = WorldScripts.Inst.gridManager.SnapToGridBuilding(
-                reference.Building.GetDescription().bounds.size,
-                desired,
-                reference.RotationY);
-            return snapped - reference.Position;
         }
 
         private bool HasMoved()
@@ -263,22 +258,7 @@ namespace InfraSpaceConstructionTools
 
         private bool ValidateWithNativePlacement()
         {
-            SetRepresentationsActive(false);
-            foreach (Snapshot snapshot in snapshots)
-            {
-                snapshot.Building.SetRepresentationActive(true);
-                Physics.SyncTransforms();
-                bool canPlace = snapshot.Building.CanPlace(checkCollision: true);
-                snapshot.Building.SetRepresentationActive(false);
-                if (!canPlace)
-                {
-                    SetRepresentationsActive(true);
-                    return false;
-                }
-            }
-
-            SetRepresentationsActive(true);
-            return true;
+            return BatchPlacement.CanPlaceBuildings(movingBuildings);
         }
 
         private void RollbackUnbuilt(HashSet<Building> unbuilt)
@@ -306,48 +286,41 @@ namespace InfraSpaceConstructionTools
                 snapshot.Building.UpdateDoesWork();
             }
 
-            ReconnectSideRoads();
+            ReconnectBuildingNetworks();
             WorldScripts.Inst.powerManager.SetNetworksDirty();
         }
 
-        private void RestorePreviewVisuals()
+        private void BeginPreview(Vector3 delta)
         {
-            foreach (NetworkClipper.Preview preview in roadPreviews)
-            {
-                preview.Restore();
-            }
+            previewSession = new BlueprintCopySession(
+                movingBuildings,
+                roadPieces,
+                anchor,
+                allowRotation: false,
+                checkBuildCosts: false,
+                ignoredBuildings: movingBuildings,
+                validateRoads: false,
+                canCommit: false,
+                copyConfiguration: false,
+                includePowerLines: false);
+            previewSession.Place(delta);
+            SetSourcesVisible(false);
+            Physics.SyncTransforms();
+            IsPreviewValid = previewSession.IsPreviewValid;
+        }
 
-            roadPreviews.Clear();
-            RestoreBuildingVisuals();
+        private void EndPreview()
+        {
+            previewSession?.Cancel();
+            previewSession = null;
+            SetSourcesVisible(true);
             Physics.SyncTransforms();
         }
 
-        private void RestoreRoadPreviews()
+        private void SetSourcesVisible(bool visible)
         {
-            roadPreviews.Clear();
-            roadPreviews.AddRange(NetworkClipper.CreatePreviews(roadPieces));
-            foreach (NetworkClipper.Preview preview in roadPreviews)
-            {
-                preview.Place(lastDelta);
-            }
-        }
-
-        private void RestoreBuildingVisuals()
-        {
-            foreach (Snapshot snapshot in snapshots)
-            {
-                if (snapshot.Building == null)
-                {
-                    continue;
-                }
-
-                snapshot.Building.SetPosition(snapshot.Position, doneByComputer: true);
-                snapshot.Building.SetRotation(snapshot.RotationY);
-                if (snapshot.Building.representation != null)
-                {
-                    snapshot.Building.representation.transform.rotation = snapshot.VisualRotation;
-                }
-            }
+            SetRepresentationsActive(visible);
+            NetworkClipper.SetSourcesVisible(roadPieces, visible);
         }
 
         private void SetRepresentationsActive(bool active)
@@ -364,35 +337,13 @@ namespace InfraSpaceConstructionTools
             foreach (Snapshot snapshot in snapshots)
             {
                 float distance = Vector3.Distance(snapshot.Position, snapshot.TargetPosition);
-                foreach (ResourceCost cost in snapshot.Building.GetDescription().GetMovingCosts(distance))
-                {
-                    totals[cost.resource] = totals.TryGetValue(cost.resource, out int amount)
-                        ? amount + cost.amount
-                        : cost.amount;
-                }
+                BatchPlacement.AddCosts(
+                    totals,
+                    snapshot.Building.GetDescription().GetMovingCosts(distance));
             }
 
             costs = totals.Select(pair => new ResourceCost(pair.Key, pair.Value)).ToList();
-            return CanSkipPay() || WorldScripts.Inst.resourceManager.CanPay(costs);
-        }
-
-        private static bool CanSkipPay()
-        {
-            return WorldScripts.Inst.worldSettings.noBuildingCosts ||
-                   !WorldScripts.Inst.debugPanel.buildCostsButton.isOn;
-        }
-
-        private static void Pay(IEnumerable<ResourceCost> costs)
-        {
-            if (CanSkipPay())
-            {
-                return;
-            }
-
-            foreach (ResourceCost cost in costs)
-            {
-                WorldScripts.Inst.resourceManager.AddResource(cost.resource, -cost.amount);
-            }
+            return BatchPlacement.CanPay(costs);
         }
 
     }

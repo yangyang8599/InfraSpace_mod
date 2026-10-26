@@ -32,56 +32,6 @@ namespace InfraSpaceConstructionTools
             "snappedStraight",
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 
-        internal sealed class Preview
-        {
-            internal NetEdge Source;
-            internal BezierDef Original;
-            internal NetEdge Moving;
-            internal Vector3 MovingStart;
-            internal Vector3 MovingEnd;
-            internal bool SourceHidden;
-            internal readonly List<NetEdge> Stationary = new List<NetEdge>();
-
-            internal void Place(Vector3 delta)
-            {
-                if (Moving == null || !Moving.IsValid())
-                {
-                    return;
-                }
-
-                Moving.startNode.SetPosition(MovingStart + delta);
-                Moving.endNode.SetPosition(MovingEnd + delta);
-            }
-
-            internal void Restore()
-            {
-                DestroyGhosts();
-                if (Source == null || !Source.IsValid() || Source.representation == null)
-                {
-                    return;
-                }
-
-                if (SourceHidden)
-                {
-                    Source.representation.SetVisible(true);
-                }
-
-                Source.representation.SetPositions(Original);
-            }
-
-            internal void DestroyGhosts()
-            {
-                DestroyEdge(Moving);
-                Moving = null;
-                foreach (NetEdge edge in Stationary)
-                {
-                    DestroyEdge(edge);
-                }
-
-                Stationary.Clear();
-            }
-        }
-
         internal static List<RoadPiece> Clip(Rect screenRect)
         {
             List<RoadPiece> pieces = new List<RoadPiece>();
@@ -108,53 +58,21 @@ namespace InfraSpaceConstructionTools
             return pieces;
         }
 
-        internal static List<Preview> CreatePreviews(IReadOnlyList<RoadPiece> pieces)
+        internal static void SetSourcesVisible(IReadOnlyList<RoadPiece> pieces, bool visible)
         {
-            List<Preview> previews = new List<Preview>();
+            HashSet<NetEdge> updated = new HashSet<NetEdge>();
             foreach (RoadPiece piece in pieces)
             {
-                if (piece.Source == null || !piece.Source.IsValid())
+                if (piece.Source == null ||
+                    !piece.Source.IsValid() ||
+                    piece.Source.representation == null ||
+                    !updated.Add(piece.Source))
                 {
                     continue;
                 }
 
-                Preview preview = new Preview
-                {
-                    Source = piece.Source,
-                    Original = piece.Source.GetBezierDef(),
-                    Moving = CreateGhost(piece),
-                    MovingStart = piece.Bezier.a,
-                    MovingEnd = piece.Bezier.d
-                };
-                if (preview.Moving == null)
-                {
-                    continue;
-                }
-
-                bool passesThrough = !piece.Entire && !piece.StartInside && !piece.EndInside;
-                if (piece.Entire || passesThrough)
-                {
-                    piece.Source.representation?.SetVisible(false);
-                    preview.SourceHidden = true;
-                    if (passesThrough)
-                    {
-                        AddStationary(preview, Slice(preview.Original, 0f, piece.StartT), piece.Source);
-                        AddStationary(preview, Slice(preview.Original, piece.EndT, 1f), piece.Source);
-                    }
-                }
-                else if (piece.StartInside)
-                {
-                    piece.Source.representation?.SetPositions(Slice(preview.Original, piece.EndT, 1f));
-                }
-                else
-                {
-                    piece.Source.representation?.SetPositions(Slice(preview.Original, 0f, piece.StartT));
-                }
-
-                previews.Add(preview);
+                piece.Source.representation.SetVisible(visible);
             }
-
-            return previews;
         }
 
         internal static NetEdge CreateGhost(RoadPiece piece)
@@ -212,6 +130,7 @@ namespace InfraSpaceConstructionTools
 
         internal static void Commit(IReadOnlyList<RoadPiece> pieces, Vector3 delta)
         {
+            PrepareSources(pieces);
             HashSet<NetNode> moving = new HashSet<NetNode>();
             List<NetEdge> reshape = new List<NetEdge>();
             foreach (RoadPiece piece in pieces)
@@ -259,9 +178,41 @@ namespace InfraSpaceConstructionTools
                 }
             }
 
-            foreach (NetEdge edge in CollectEdges(moving, reshape))
+            HashSet<NetEdge> affectedEdges = CollectEdges(moving, reshape);
+            HashSet<Road> affectedRoads = new HashSet<Road>();
+            foreach (NetEdge edge in affectedEdges)
             {
+                edge.SetIsBuilt(isBuilt: true, firstTime: false);
                 RefreshEdge(edge);
+                if (edge.road != null)
+                {
+                    affectedRoads.Add(edge.road);
+                }
+            }
+
+            if (affectedRoads.Count > 0)
+            {
+                Road.UpdateSideRoads(affectedRoads);
+            }
+        }
+
+        private static void PrepareSources(IReadOnlyList<RoadPiece> pieces)
+        {
+            HashSet<NetEdge> prepared = new HashSet<NetEdge>();
+            foreach (RoadPiece piece in pieces)
+            {
+                NetEdge edge = piece?.Source;
+                if (edge == null || !edge.IsValid() || !prepared.Add(edge))
+                {
+                    continue;
+                }
+
+                edge.road?.RemoveSideRoads();
+                edge.SetIsBuilt(isBuilt: false, firstTime: false);
+                if (edge.AffectsTerrain())
+                {
+                    WorldScripts.Inst.roadDecalManager.UpdateArea(edge, batch: true);
+                }
             }
         }
 
@@ -409,6 +360,7 @@ namespace InfraSpaceConstructionTools
             {
                 if (edge != null && edge.IsValid())
                 {
+                    edge.SetIsBuilt(isBuilt: true, firstTime: false);
                     RefreshEdge(edge);
                 }
             }
@@ -444,18 +396,6 @@ namespace InfraSpaceConstructionTools
             }
 
             return replacement;
-        }
-
-        private static void AddStationary(Preview preview, BezierDef bezier, NetEdge source)
-        {
-            if (Vector3.Distance(bezier.a, bezier.d) < MinimumLength)
-            {
-                return;
-            }
-
-            NetEdge ghost = new NetEdge(source.networkType, source.GetEdgeName(), bezier.a, bezier.d);
-            ApplyBezier(ghost, bezier);
-            preview.Stationary.Add(ghost);
         }
 
         private static RoadPiece ClipEdge(NetEdge edge, Rect screenRect, Camera camera)

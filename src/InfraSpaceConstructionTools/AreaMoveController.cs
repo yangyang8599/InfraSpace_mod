@@ -32,8 +32,7 @@ namespace InfraSpaceConstructionTools
         private MoveState state;
         private Vector2 selectionStart;
         private Vector2 selectionEnd;
-        private BlueprintCopySession copySession;
-        private BuildingMoveSession moveSession;
+        private IBatchPlacementSession placementSession;
         private bool initialized;
         private BatchKind batchKind;
         private int pendingBatchActivationFrames;
@@ -108,7 +107,7 @@ namespace InfraSpaceConstructionTools
 
         public bool IsCameraRotationBlocked()
         {
-            return state == MoveState.Preview && copySession != null;
+            return state == MoveState.Preview && batchKind == BatchKind.Copy;
         }
 
         public bool IsSelected(Building building)
@@ -171,7 +170,11 @@ namespace InfraSpaceConstructionTools
 
             if (state == MoveState.Preview)
             {
-                copySession?.UpdatePreview(Input.mousePosition);
+                if (batchKind == BatchKind.Copy)
+                {
+                    placementSession?.UpdatePreview(Input.mousePosition);
+                }
+
                 if (Input.GetButtonDown("Fire2"))
                 {
                     Cancel();
@@ -186,7 +189,10 @@ namespace InfraSpaceConstructionTools
                 return;
             }
 
-            moveSession?.UpdatePreview(Input.mousePosition);
+            if (batchKind == BatchKind.Move)
+            {
+                placementSession?.UpdatePreview(Input.mousePosition);
+            }
         }
 
         private void SetBatch(BatchKind kind)
@@ -236,13 +242,11 @@ namespace InfraSpaceConstructionTools
 
             if (batchKind == BatchKind.Copy)
             {
-                copySession = new BlueprintCopySession(buildings, roads, anchor);
-                copySession.Committed += HandleCommitted;
+                placementSession = new BlueprintCopySession(buildings, roads, anchor);
             }
             else
             {
-                moveSession = new BuildingMoveSession(buildings, roads, anchor);
-                moveSession.Committed += HandleCommitted;
+                placementSession = new BuildingMoveSession(buildings, roads, anchor);
             }
 
             state = MoveState.Preview;
@@ -290,21 +294,13 @@ namespace InfraSpaceConstructionTools
 
         private void TryCommit()
         {
-            if (copySession == null && moveSession == null)
+            if (placementSession == null)
             {
                 Cancel();
                 return;
             }
 
-            if (copySession != null &&
-                copySession.TryCommit() == BlueprintCopySession.CommitResult.Success)
-            {
-                HandleCommitted();
-                return;
-            }
-
-            if (moveSession != null &&
-                moveSession.TryCommit() == BuildingMoveSession.CommitResult.Success)
+            if (placementSession.TryCommit() == BatchCommitResult.Success)
             {
                 HandleCommitted();
             }
@@ -314,16 +310,13 @@ namespace InfraSpaceConstructionTools
         {
             ClearSelection();
             state = MoveState.Idle;
-            copySession = null;
-            moveSession = null;
+            placementSession = null;
         }
 
         private void Cancel()
         {
-            copySession?.Cancel();
-            moveSession?.Cancel();
-            copySession = null;
-            moveSession = null;
+            placementSession?.Cancel();
+            placementSession = null;
             ClearSelection();
             state = MoveState.Idle;
         }
@@ -405,24 +398,24 @@ namespace InfraSpaceConstructionTools
         {
             string hint = null;
             bool warning = false;
-            if (state == MoveState.Preview && (copySession != null || moveSession != null))
+            if (state == MoveState.Preview && placementSession != null)
             {
-                bool copying = copySession != null;
-                bool valid = copying ? copySession.IsPreviewValid : moveSession.IsPreviewValid;
-                int roadNodes = copying ? copySession.RoadNodeCount : moveSession.RoadNodeCount;
+                bool copying = batchKind == BatchKind.Copy;
+                bool valid = placementSession.IsPreviewValid;
+                int roadNodes = placementSession.RoadNodeCount;
                 string title = copying ? "蓝图复制" : "批量移动";
                 if (!valid)
                 {
-                    hint = title + "：当前位置不可用或资源不足";
+                    hint = title + "：目标位置不可用或资源不足    |    右键或 Esc 取消";
                     warning = true;
                 }
                 else if (copying)
                 {
-                    hint = $"{title}：{selected.Count} 个建筑、{roadNodes} 个路段    左键建造    {RotateHint()}    按住 Shift 微调    右键或 Esc 取消";
+                    hint = $"{title}：{selected.Count} 个建筑，{roadNodes} 个路段    |    左键确认    |    {RotateHint()}    |    按住 Shift 微调    |    右键或 Esc 取消";
                 }
                 else
                 {
-                    hint = $"{title}：{selected.Count} 个建筑、{roadNodes} 个路段    左键确认    按住 Shift 微调    右键或 Esc 取消";
+                    hint = $"{title}：{selected.Count} 个建筑，{roadNodes} 个路段    |    左键确认    |    按住 Shift 微调    |    右键或 Esc 取消";
                 }
             }
             else if (batchKind != BatchKind.None &&
@@ -430,12 +423,12 @@ namespace InfraSpaceConstructionTools
                      WorldScripts.Inst.dashboard.IsMoving())
             {
                 hint = batchKind == BatchKind.Copy
-                    ? "蓝图复制：拖框选择建筑和道路"
-                    : "批量移动：拖框选择    框内道路沿选框边缘切断";
+                    ? "蓝图复制：拖框选择建筑、道路和管道    |    选框边界处自动截断"
+                    : "批量移动：拖框选择建筑、道路和管道    |    选框边界处自动截断";
             }
             else if (RailChainUpgradePatch.ShowHint)
             {
-                hint = "升级铁路：按住 Shift，连通的铁路一起升级";
+                hint = "铁路链式升级：按住 Shift 升级全部连通铁路";
             }
 
             if (hint != null)
@@ -512,7 +505,7 @@ namespace InfraSpaceConstructionTools
 
         private static string RotateHint()
         {
-            return KeyLabel(Keybinding.CameraRotateLeft) + "/" + KeyLabel(Keybinding.CameraRotateRight) + " 旋转90度";
+            return KeyLabel(Keybinding.CameraRotateLeft) + "/" + KeyLabel(Keybinding.CameraRotateRight) + " 旋转 90°";
         }
 
         private static string KeyLabel(Keybinding binding)

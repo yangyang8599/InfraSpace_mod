@@ -16,8 +16,8 @@ namespace InfraSpaceConstructionTools
             EnsureStyle();
             bool suppressed = RoadSnapFeature.MagnetSuppressed;
             string text = suppressed
-                ? "公路吸附：关    按 H 恢复接路    格子对齐仍然有效"
-                : "公路吸附：开    按 H 关掉贴到下层公路";
+                ? "道路磁吸：已关闭    |    按 H 开启    |    网格对齐不受影响"
+                : "道路磁吸：已开启    |    按 H 关闭    |    网格对齐不受影响";
             Rect rect = new Rect((Screen.width - 640f) * 0.5f, 72f, 640f, 48f);
             Color previous = GUI.color;
             GUI.color = new Color(0.08f, 0.1f, 0.12f, 0.92f);

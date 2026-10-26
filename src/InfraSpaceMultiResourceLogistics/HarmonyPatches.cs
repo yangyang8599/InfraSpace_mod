@@ -47,13 +47,9 @@ namespace InfraSpaceMultiResourceLogistics
     [HarmonyPatch(typeof(DistributionProductionLogic), nameof(DistributionProductionLogic.UpdateSimulationThread))]
     internal static class DistributionSimulationPatch
     {
+        // 一种或多种物资都由 Mod 配送。返回 false，跳过原版只认主物资的模拟。
         private static bool Prefix(DistributionProductionLogic __instance)
         {
-            if (CenterState.GetResources(__instance).Count <= 1)
-            {
-                return true;
-            }
-
             MultiResourceLogisticsEngine.UpdateDistribution(__instance);
             return false;
         }
@@ -69,13 +65,9 @@ namespace InfraSpaceMultiResourceLogistics
         nameof(CollectionProductionLogic.TryStartDeliveryToCollectionCenter))]
     internal static class CollectionPassiveDeliveryPatch
     {
-        private static bool Prefix(CollectionProductionLogic __instance, ref bool __result)
+        // 搜集中心一律自己拉取。返回 false，避免和生产建筑的原版推送各发一车。
+        private static bool Prefix(ref bool __result)
         {
-            if (CenterState.GetResources(__instance).Count <= 1)
-            {
-                return true;
-            }
-
             __result = false;
             return false;
         }
@@ -106,13 +98,9 @@ namespace InfraSpaceMultiResourceLogistics
         nameof(CollectionDistributionHookup.UpdateCollectionCenter))]
     internal static class CollectionReconnectPatch
     {
+        // 按当前物资列表重建连接。返回 false，避免多种减成一种时原版只解开第一种物资。
         private static bool Prefix(CollectionProductionLogic collectionCenter, Registry registry)
         {
-            if (CenterState.GetResources(collectionCenter).Count <= 1)
-            {
-                return true;
-            }
-
             MultiResourceLogisticsEngine.ReconnectCollection(collectionCenter, registry);
             return false;
         }
@@ -123,13 +111,9 @@ namespace InfraSpaceMultiResourceLogistics
         nameof(CollectionDistributionHookup.UpdateDistributionCenter))]
     internal static class DistributionReconnectPatch
     {
+        // 按当前物资列表重建连接。返回 false，避免多种减成一种时残留旧物资连接。
         private static bool Prefix(DistributionProductionLogic distributionCenter, Registry registry)
         {
-            if (CenterState.GetResources(distributionCenter).Count <= 1)
-            {
-                return true;
-            }
-
             MultiResourceLogisticsEngine.ReconnectDistribution(distributionCenter, registry);
             return false;
         }
@@ -207,6 +191,17 @@ namespace InfraSpaceMultiResourceLogistics
             {
                 __result = true;
             }
+        }
+    }
+
+    [HarmonyPatch(typeof(ConsumerProducer), "UpdateOutgoingTraffic")]
+    internal static class ProducerOutgoingTrafficPatch
+    {
+        // 覆盖物资在搜集中心都满员时转公共供需。返回 false，跳过原版互斥分支。
+        private static bool Prefix(ConsumerProducer __instance)
+        {
+            MultiResourceLogisticsEngine.UpdateProducerOutgoing(__instance);
+            return false;
         }
     }
 
