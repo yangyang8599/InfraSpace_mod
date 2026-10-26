@@ -207,13 +207,11 @@ namespace InfraSpaceMultiResourceLogistics
         }
     }
 
-    [HarmonyPatch(typeof(CollectionInfoPanel), nameof(CollectionInfoPanel.GetCustomVisualizationMat))]
-    internal static class CollectionRangeReachabilityPatch
+    internal static class RangeReachability
     {
         private const float CacheSeconds = 1f;
 
-        private static readonly Dictionary<long, Reachability> ReachabilityByProducer =
-            new Dictionary<long, Reachability>();
+        private static readonly Dictionary<long, Reachability> Cache = new Dictionary<long, Reachability>();
 
         private static long cachedCenterId = long.MinValue;
 
@@ -227,26 +225,27 @@ namespace InfraSpaceMultiResourceLogistics
             public float Time;
         }
 
-        // 范围内已连接的生产建筑原版涂成绿色。没有货车路径时改成红色；黄色仍表示未覆盖。
-        private static void Postfix(
-            Building building,
-            ref Material __result,
-            CollectionProductionLogic ___collectionCenter)
+        // 绿色表示已覆盖。货车从 source 开不到 destination 时改成红色。
+        internal static void PaintIfUnreachable(
+            Building source,
+            Building destination,
+            Building covered,
+            ref Material result)
         {
             VisualizationManager visualization = WorldScripts.Inst?.visualizationManager;
-            Building center = ___collectionCenter?.consumerProducer?.building;
             if (visualization == null ||
-                center == null ||
-                building == null ||
-                __result != visualization.scaleMatGreen)
+                source == null ||
+                destination == null ||
+                covered == null ||
+                result != visualization.scaleMatGreen)
             {
                 return;
             }
 
             Material unreachable = UnreachableMaterial(visualization);
-            if (unreachable != null && !CanTruckReach(building, center))
+            if (unreachable != null && !CanTruckReach(source, destination, covered))
             {
-                __result = unreachable;
+                result = unreachable;
             }
         }
 
@@ -269,29 +268,24 @@ namespace InfraSpaceMultiResourceLogistics
             return unreachableMaterial;
         }
 
-        private static bool CanTruckReach(Building producer, Building center)
+        private static bool CanTruckReach(Building source, Building destination, Building covered)
         {
-            long centerId = center.GetID();
+            long centerId = source.GetID() == covered.GetID() ? destination.GetID() : source.GetID();
             if (centerId != cachedCenterId)
             {
-                ReachabilityByProducer.Clear();
+                Cache.Clear();
                 cachedCenterId = centerId;
             }
 
-            long producerId = producer.GetID();
+            long coveredId = covered.GetID();
             float now = Time.unscaledTime;
-            if (ReachabilityByProducer.TryGetValue(producerId, out Reachability cached) &&
-                now - cached.Time < CacheSeconds)
+            if (Cache.TryGetValue(coveredId, out Reachability cached) && now - cached.Time < CacheSeconds)
             {
                 return cached.CanReach;
             }
 
-            bool canReach = QueryTruckPath(producer, center);
-            ReachabilityByProducer[producerId] = new Reachability
-            {
-                CanReach = canReach,
-                Time = now,
-            };
+            bool canReach = QueryTruckPath(source, destination);
+            Cache[coveredId] = new Reachability { CanReach = canReach, Time = now };
             return canReach;
         }
 
@@ -319,12 +313,40 @@ namespace InfraSpaceMultiResourceLogistics
                 {
                     loggedFailure = true;
                     Debug.LogWarning(
-                        "[InfraSpaceMultiResourceLogistics] 搜集范围可达性检查失败，该建筑会标成红色。 " +
+                        "[InfraSpaceMultiResourceLogistics] 物流范围可达性检查失败，该建筑会标成红色。 " +
                         exception.Message);
                 }
 
                 return false;
             }
+        }
+    }
+
+    [HarmonyPatch(typeof(CollectionInfoPanel), nameof(CollectionInfoPanel.GetCustomVisualizationMat))]
+    internal static class CollectionRangeReachabilityPatch
+    {
+        // 搜集货车从生产建筑开往搜集中心。黄色仍表示未覆盖。
+        private static void Postfix(
+            Building building,
+            ref Material __result,
+            CollectionProductionLogic ___collectionCenter)
+        {
+            Building center = ___collectionCenter?.consumerProducer?.building;
+            RangeReachability.PaintIfUnreachable(building, center, building, ref __result);
+        }
+    }
+
+    [HarmonyPatch(typeof(DistributionInfoPanel), nameof(DistributionInfoPanel.GetCustomVisualizationMat))]
+    internal static class DistributionRangeReachabilityPatch
+    {
+        // 配送货车从配送中心开往消费建筑。黄色仍表示未覆盖。
+        private static void Postfix(
+            Building building,
+            ref Material __result,
+            DistributionProductionLogic ___distributionCenter)
+        {
+            Building center = ___distributionCenter?.consumerProducer?.building;
+            RangeReachability.PaintIfUnreachable(center, building, building, ref __result);
         }
     }
 
