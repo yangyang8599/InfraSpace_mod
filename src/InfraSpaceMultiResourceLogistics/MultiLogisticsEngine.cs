@@ -86,7 +86,7 @@ namespace InfraSpaceMultiResourceLogistics
                 else if (!laneBlocked &&
                          StorageHasOrder(producer, index, resource, out int orderAmount) &&
                          !ReserveForCollection(producer, resource, orderAmount) &&
-                         TrySuggestPublicDelivery(producer, resource, orderAmount))
+                         TryDeliverSurplus(producer, index, resource, orderAmount))
                 {
                     break;
                 }
@@ -121,10 +121,7 @@ namespace InfraSpaceMultiResourceLogistics
 
             for (int i = 0; i < centers.Count; i++)
             {
-                CollectionProductionLogic center = centers[i];
-                ConsumerProducer storage = center?.consumerProducer;
-                if (storage != null &&
-                    HasCapacity(storage, resource, CenterState.GetCapacity(center, resource), orderAmount))
+                if (CenterCanAccept(centers[i], resource, orderAmount))
                 {
                     return true;
                 }
@@ -133,41 +130,162 @@ namespace InfraSpaceMultiResourceLogistics
             return false;
         }
 
-        private static bool TrySuggestPublicDelivery(
-            ConsumerProducer producer,
+        private static bool CenterCanAccept(
+            CollectionProductionLogic center,
             Resource resource,
             int orderAmount)
         {
+            ConsumerProducer storage = center?.consumerProducer;
+            if (storage == null || IndexOf(storage.incomingResources, resource) < 0)
+            {
+                return false;
+            }
+
+            return HasCapacity(
+                storage,
+                resource,
+                CenterState.GetCapacity(center, resource),
+                orderAmount);
+        }
+
+        private static bool TryDeliverSurplus(
+            ConsumerProducer producer,
+            int storageIndex,
+            Resource resource,
+            int orderAmount)
+        {
+            List<Pair<ConsumerProducer, float>> targets = CollectSurplusTargets(producer, resource);
+            if (targets.Count == 0)
+            {
+                return false;
+            }
+
+            targets.Sort((left, right) => left.second.CompareTo(right.second));
+            int pathAttempts = 0;
+            for (int i = 0; i < targets.Count; i++)
+            {
+                ConsumerProducer destination = targets[i].first;
+                if (!CanAcceptSurplus(destination, resource, orderAmount))
+                {
+                    continue;
+                }
+
+                pathAttempts++;
+                if (pathAttempts > 12)
+                {
+                    break;
+                }
+
+                lock (producer)
+                {
+                    if (producer.outgoingStorage[storageIndex] < orderAmount)
+                    {
+                        return false;
+                    }
+
+                    CarDispatch result = DispatchCar(
+                        producer.building,
+                        destination.building,
+                        resource,
+                        orderAmount);
+                    if (result == CarDispatch.Sent)
+                    {
+                        producer.outgoingStorage[storageIndex] -= orderAmount;
+                        return true;
+                    }
+
+                    if (result == CarDispatch.NotPlaced)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static List<Pair<ConsumerProducer, float>> CollectSurplusTargets(
+            ConsumerProducer producer,
+            Resource resource)
+        {
+            List<Pair<ConsumerProducer, float>> targets = new List<Pair<ConsumerProducer, float>>();
+            HashSet<long> seen = new HashSet<long>();
             if (publicConsumers == null)
             {
                 publicConsumers = new List<Pair<ConsumerProducer, float>>();
             }
 
             WorldScripts.Inst.orderManager.GetInterestedConsumers(resource, publicConsumers, producer);
-            foreach (Pair<ConsumerProducer, float> candidate in publicConsumers.OrderBy(pair =>
-                         producer.GetConsumptionPriorityQuick(pair.first, pair.second)))
+            for (int i = 0; i < publicConsumers.Count; i++)
             {
+                Pair<ConsumerProducer, float> candidate = publicConsumers[i];
+                ConsumerProducer consumer = candidate.first;
                 if (candidate.second <= 0f ||
-                    candidate.first?.building == null ||
-                    candidate.first.productionLogic is CollectionProductionLogic)
+                    consumer?.building == null ||
+                    consumer.productionLogic is CollectionProductionLogic ||
+                    !seen.Add(consumer.building.GetID()))
                 {
                     continue;
                 }
 
-                List<PathPart> path = PathFinderFacadeRoads.GetPath(
-                    producer.building,
-                    candidate.first.building);
-                if (path == null)
-                {
-                    continue;
-                }
-
-                WorldScripts.Inst.orderManager.SuggestDelivery(
-                    new DeliverySuggestion(producer, candidate.first, resource, orderAmount, path));
-                return true;
+                targets.Add(new Pair<ConsumerProducer, float>(
+                    consumer,
+                    producer.GetConsumptionPriorityQuick(consumer, candidate.second)));
             }
 
-            return false;
+            Registry registry = WorldScripts.Inst.registry;
+            if (registry?.consumers == null ||
+                !registry.consumers.TryGetValue(resource, out HashSet<ConsumerProducer> consumers))
+            {
+                return targets;
+            }
+
+            foreach (ConsumerProducer consumer in consumers)
+            {
+                if (!(consumer?.productionLogic is StorehouseProductionLogic) ||
+                    consumer.building == null ||
+                    !consumer.building.IsValidAndBuilt() ||
+                    !seen.Add(consumer.building.GetID()))
+                {
+                    continue;
+                }
+
+                targets.Add(new Pair<ConsumerProducer, float>(
+                    consumer,
+                    producer.GetConsumptionPriorityQuick(consumer, 0.25f)));
+            }
+
+            return targets;
+        }
+
+        private static bool CanAcceptSurplus(
+            ConsumerProducer destination,
+            Resource resource,
+            int orderAmount)
+        {
+            if (destination?.building == null || !destination.building.IsValidAndBuilt())
+            {
+                return false;
+            }
+
+            if (destination.productionLogic is StorehouseProductionLogic storehouse &&
+                (storehouse.consumables == null || !storehouse.consumables.Contains(resource)))
+            {
+                return false;
+            }
+
+            int index = IndexOf(destination.incomingResources, resource);
+            if (index < 0 ||
+                destination.incomingStorage == null ||
+                index >= destination.incomingStorage.Length)
+            {
+                return false;
+            }
+
+            int capacity = destination.GetConsumables(false)[index].amount;
+            int pending = destination.GetIncomingCarsResourceAmount(resource);
+            int available = capacity - destination.incomingStorage[index] - pending;
+            return CanReceiveTruck(destination, available, orderAmount);
         }
 
         private struct ScoredDemand
@@ -794,11 +912,7 @@ namespace InfraSpaceMultiResourceLogistics
                 int orderAmount = ConsumerProducer.GetOrderAmount(resource);
                 foreach (ConsumerProducer producer in center.connectedProducers.ToArray())
                 {
-                    if (!HasCapacity(
-                            center.consumerProducer,
-                            resource,
-                            CenterState.GetCapacity(center, resource),
-                            orderAmount))
+                    if (!CenterCanAccept(center, resource, orderAmount))
                     {
                         break;
                     }

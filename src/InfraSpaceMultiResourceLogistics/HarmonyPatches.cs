@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
@@ -190,6 +191,127 @@ namespace InfraSpaceMultiResourceLogistics
             if (collection != null && CenterState.ShareResource(collection, ___distributionCenter))
             {
                 __result = true;
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(CollectionInfoPanel), nameof(CollectionInfoPanel.GetCustomVisualizationMat))]
+    internal static class CollectionRangeReachabilityPatch
+    {
+        private const float CacheSeconds = 1f;
+
+        private static readonly Dictionary<long, Reachability> ReachabilityByProducer =
+            new Dictionary<long, Reachability>();
+
+        private static long cachedCenterId = long.MinValue;
+
+        private static bool loggedFailure;
+
+        private static Material unreachableMaterial;
+
+        private struct Reachability
+        {
+            public bool CanReach;
+            public float Time;
+        }
+
+        // 范围内已连接的生产建筑原版涂成绿色。没有货车路径时改成红色；黄色仍表示未覆盖。
+        private static void Postfix(
+            Building building,
+            ref Material __result,
+            CollectionProductionLogic ___collectionCenter)
+        {
+            VisualizationManager visualization = WorldScripts.Inst?.visualizationManager;
+            Building center = ___collectionCenter?.consumerProducer?.building;
+            if (visualization == null ||
+                center == null ||
+                building == null ||
+                __result != visualization.scaleMatGreen)
+            {
+                return;
+            }
+
+            Material unreachable = UnreachableMaterial(visualization);
+            if (unreachable != null && !CanTruckReach(building, center))
+            {
+                __result = unreachable;
+            }
+        }
+
+        private static Material UnreachableMaterial(VisualizationManager visualization)
+        {
+            if (unreachableMaterial != null)
+            {
+                return unreachableMaterial;
+            }
+
+            if (visualization.scaleMatGreen == null)
+            {
+                return null;
+            }
+
+            unreachableMaterial = new Material(visualization.scaleMatGreen)
+            {
+                color = new Color(1f, 0.08f, 0.06f, 1f),
+            };
+            return unreachableMaterial;
+        }
+
+        private static bool CanTruckReach(Building producer, Building center)
+        {
+            long centerId = center.GetID();
+            if (centerId != cachedCenterId)
+            {
+                ReachabilityByProducer.Clear();
+                cachedCenterId = centerId;
+            }
+
+            long producerId = producer.GetID();
+            float now = Time.unscaledTime;
+            if (ReachabilityByProducer.TryGetValue(producerId, out Reachability cached) &&
+                now - cached.Time < CacheSeconds)
+            {
+                return cached.CanReach;
+            }
+
+            bool canReach = QueryTruckPath(producer, center);
+            ReachabilityByProducer[producerId] = new Reachability
+            {
+                CanReach = canReach,
+                Time = now,
+            };
+            return canReach;
+        }
+
+        private static bool QueryTruckPath(Building source, Building destination)
+        {
+            if (!source.IsValid() || !destination.IsValid())
+            {
+                return false;
+            }
+
+            // 没有出口或入口车道时，寻路会把缺省方向当成查询并可能误判为可达。
+            if (!source.HasAnyOutgoingLane() || !destination.HasAnyIncomingLane())
+            {
+                return false;
+            }
+
+            try
+            {
+                List<PathPart> path = PathFinderFacadeRoads.GetPath(source, destination);
+                return path != null && path.Count > 0;
+            }
+            catch (Exception exception)
+            {
+                if (!loggedFailure)
+                {
+                    loggedFailure = true;
+                    Debug.LogWarning(
+                        "[InfraSpaceMultiResourceLogistics] 搜集范围可达性检查失败，该建筑会标成红色。 " +
+                        exception.Message);
+                }
+
+                return false;
             }
         }
     }
