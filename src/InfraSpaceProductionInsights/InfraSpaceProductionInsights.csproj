@@ -20,6 +20,8 @@
     <Reference Include="InfraSpaceCore" HintPath="$(GameManagedPath)\InfraSpaceCore.dll" Private="false" />
     <Reference Include="old" HintPath="$(GameManagedPath)\old.dll" Private="false" />
     <Reference Include="UnityEngine.CoreModule" HintPath="$(GameManagedPath)\UnityEngine.CoreModule.dll" Private="false" />
+    <Reference Include="UnityEngine.TextRenderingModule" HintPath="$(GameManagedPath)\UnityEngine.TextRenderingModule.dll" Private="false" />
+    <Reference Include="UnityEngine.UIModule" HintPath="$(GameManagedPath)\UnityEngine.UIModule.dll" Private="false" />
     <Reference Include="UnityEngine.UI" HintPath="$(GameManagedPath)\UnityEngine.UI.dll" Private="false" />
     <Reference Include="Unity.TextMeshPro" HintPath="$(GameManagedPath)\Unity.TextMeshPro.dll" Private="false" />
   </ItemGroup>

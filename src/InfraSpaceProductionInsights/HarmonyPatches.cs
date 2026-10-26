@@ -131,4 +131,23 @@ namespace InfraSpaceProductionInsights
             PowerGridColors.ShowRange(__instance);
         }
     }
+
+    [HarmonyPatch(typeof(VisualizationManager), "GetVisualTypeToDisplay")]
+    internal static class ProducerVisualTypePatch
+    {
+        // 不跳过原版。选中产物时，把面板上的普通可视化改成空白底，方便只突出生产建筑。
+        private static void Postfix(ref VisualType __result)
+        {
+            ProducerList.OverrideVisualType(ref __result);
+        }
+    }
+
+    [HarmonyPatch(typeof(VisualizationManager), "GetBuildingMat")]
+    internal static class HighlightProducersPatch
+    {
+        private static void Postfix(Building building, VisualType visualType, ref Material __result)
+        {
+            ProducerList.ApplyHighlight(building, visualType, ref __result);
+        }
+    }
 }

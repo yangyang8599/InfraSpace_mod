@@ -1,7 +1,7 @@
 {
   "name": "InfraSpaceProductionInsights",
   "author": "yangy",
-  "description": "Improve the production overview, and color each power grid's supply range separately.",
+  "description": "Improve the production overview, color each power grid's supply range, and highlight buildings that produce a chosen item.",
   "version": "1.0.0",
   "url": ""
 }
