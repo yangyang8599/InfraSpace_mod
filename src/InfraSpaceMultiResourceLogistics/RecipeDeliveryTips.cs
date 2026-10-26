@@ -26,7 +26,7 @@ namespace InfraSpaceMultiResourceLogistics
                 return;
             }
 
-            ApplyIncoming(LeftInfos.GetValue(storage) as List<ResourceInfoPanel>, building, definition.consumables);
+            ApplyIncoming(LeftInfos.GetValue(storage) as List<ResourceInfoPanel>, producer, definition.consumables);
             ApplyOutgoing(
                 RightInfos.GetValue(storage) as List<ResourceInfoPanel>,
                 producer,
@@ -35,10 +35,10 @@ namespace InfraSpaceMultiResourceLogistics
 
         private static void ApplyIncoming(
             List<ResourceInfoPanel> panels,
-            Building building,
+            ConsumerProducer producer,
             List<ResourceCost> costs)
         {
-            if (panels == null || costs == null)
+            if (panels == null || producer == null || costs == null)
             {
                 return;
             }
@@ -47,8 +47,64 @@ namespace InfraSpaceMultiResourceLogistics
             for (int i = 0; i < count; i++)
             {
                 Resource resource = costs[i].resource;
-                SetTip(panels[i], resource, TransitTip.DescribeIncoming(building, resource));
+                string supply = DescribeSupply(producer, resource);
+                SetTip(panels[i], resource, DescribeInput(producer, resource, supply));
+                SetDeliveryTip(panels[i], supply);
             }
+        }
+
+        private static string DescribeInput(ConsumerProducer producer, Resource resource, string supply)
+        {
+            StringBuilder text = new StringBuilder();
+            text.Append(TransitTip.DescribeIncoming(producer.building, resource));
+            if (!string.IsNullOrEmpty(supply))
+            {
+                text.Append('\n');
+                text.Append(supply);
+            }
+
+            return text.ToString();
+        }
+
+        private static string DescribeSupply(ConsumerProducer producer, Resource resource)
+        {
+            Building building = producer.building;
+            if (building.GetPipeComponentForResource(resource) != null)
+            {
+                return "通过管道输入";
+            }
+
+            List<string> centers = UpgradeDeliveryTipPatch.DistributionSources(producer, resource);
+            if (centers.Count > 0)
+            {
+                StringBuilder text = new StringBuilder("由配送中心配送");
+                for (int i = 0; i < centers.Count; i++)
+                {
+                    text.Append("\n  ");
+                    text.Append(centers[i]);
+                }
+
+                return text.ToString();
+            }
+
+            if (WorldScripts.Inst.districtsManager.IsDistrictImporting(
+                    resource,
+                    WorldScripts.Inst.districtsManager.GetDistrict(building.GetPosition())))
+            {
+                return "按地区进口";
+            }
+
+            return "由公共供需配送";
+        }
+
+        private static void SetDeliveryTip(ResourceInfoPanel panel, string body)
+        {
+            if (panel?.deliveryTooltip == null || string.IsNullOrEmpty(body))
+            {
+                return;
+            }
+
+            panel.deliveryTooltip.Init(Localization.GetText("deliveryMethod"), body);
         }
 
         private static void ApplyOutgoing(
@@ -146,14 +202,25 @@ namespace InfraSpaceMultiResourceLogistics
     {
         private static void Postfix(ResourceInfoPanel __instance, DeliveryMethod method)
         {
-            if (method != DeliveryMethod.CollectionCenters || __instance?.deliveryTooltip == null)
+            if (__instance?.deliveryTooltip == null)
             {
                 return;
             }
 
-            __instance.deliveryTooltip.Init(
-                Localization.GetText("deliveryMethod"),
-                "优先派送给搜集中心，其次给全局处理。");
+            if (method == DeliveryMethod.CollectionCenters)
+            {
+                __instance.deliveryTooltip.Init(
+                    Localization.GetText("deliveryMethod"),
+                    "优先派送给搜集中心，其次给全局处理。");
+                return;
+            }
+
+            if (method == DeliveryMethod.DistributionCenters)
+            {
+                __instance.deliveryTooltip.Init(
+                    Localization.GetText("deliveryMethod"),
+                    "由能开到的配送中心配送。没有路时仍由公共供需配送。");
+            }
         }
     }
 
@@ -280,7 +347,7 @@ namespace InfraSpaceMultiResourceLogistics
             return amount;
         }
 
-        private static List<string> DistributionSources(ConsumerProducer producer, Resource resource)
+        internal static List<string> DistributionSources(ConsumerProducer producer, Resource resource)
         {
             List<string> names = new List<string>();
             if (producer.connectedDistributionCenters == null ||

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using HarmonyLib;
 using TMPro;
 using UnityEngine;
@@ -673,27 +674,30 @@ namespace InfraSpaceMultiResourceLogistics
                     continue;
                 }
 
-                bool blocked = IsRoadBlocked(center, resources[i]);
+                List<string> partners = PartnerNames(center, resources[i]);
+                bool missing = partners.Count == 0;
+                bool blocked = !missing && IsRoadBlocked(center, resources[i]);
+                bool warning = missing || blocked;
+                string tip = DescribeLink(center, partners, missing, blocked) + "\n右键移除此物资";
                 ResourceChipButton button = chip.GetComponent<ResourceChipButton>();
-                if (button != null && button.roadBlocked == blocked)
+                if (button != null && button.roadBlocked == warning && button.linkTip == tip)
                 {
                     continue;
                 }
 
                 if (button != null)
                 {
-                    button.roadBlocked = blocked;
+                    button.roadBlocked = warning;
+                    button.linkTip = tip;
                 }
 
                 Image background = chip.GetComponent<Image>();
                 if (background != null)
                 {
-                    background.color = blocked ? RoadWarningColor : Color.white;
+                    background.color = warning ? RoadWarningColor : Color.white;
                 }
 
-                chip.GetComponent<TooltipHoverable>()?.Init(
-                    resources[i].GetNameInGame(),
-                    blocked ? "货车无法从收集中心出口开到配送中心入口" : "右键移除此物资");
+                chip.GetComponent<TooltipHoverable>()?.Init(resources[i].GetNameInGame(), tip);
             }
         }
 
@@ -999,7 +1003,10 @@ namespace InfraSpaceMultiResourceLogistics
             {
                 Resource resource = resources[i];
                 float y = i * rowHeight;
-                if (IsRoadBlocked(center, resource))
+                List<string> partners = PartnerNames(center, resource);
+                bool missing = partners.Count == 0;
+                bool blocked = !missing && IsRoadBlocked(center, resource);
+                if (missing || blocked)
                 {
                     Color previous = GUI.color;
                     GUI.color = RoadWarningColor;
@@ -1015,10 +1022,10 @@ namespace InfraSpaceMultiResourceLogistics
                     iconRect.Contains(Event.current.mousePosition))
                 {
                     Building building = GetConsumerProducer(center)?.building;
-                    if (building != null)
-                    {
-                        storageHoverTip = TransitTip.Describe(building, resource);
-                    }
+                    string link = DescribeLink(center, partners, missing, blocked);
+                    storageHoverTip = building == null
+                        ? link
+                        : link + "\n" + TransitTip.Describe(building, resource);
                 }
 
                 int storage = GetStorage(GetConsumerProducer(center), resource);
@@ -1877,6 +1884,89 @@ namespace InfraSpaceMultiResourceLogistics
             return false;
         }
 
+        private static List<string> PartnerNames(object center, Resource resource)
+        {
+            List<string> names = new List<string>();
+            if (resource == null)
+            {
+                return names;
+            }
+
+            if (center is CollectionProductionLogic collection)
+            {
+                AppendPartners(collection.connectedDistributionCenters, names, resource, true);
+            }
+            else if (center is DistributionProductionLogic distribution)
+            {
+                AppendPartners(distribution.connectedCollectionCenters, names, resource, false);
+            }
+
+            return names;
+        }
+
+        private static void AppendPartners(
+            List<Reference<Building>> links,
+            List<string> names,
+            Resource resource,
+            bool partnerIsDistribution)
+        {
+            if (links == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < links.Count && names.Count < 8; i++)
+            {
+                Building building = links[i]?.Get();
+                if (building == null || !building.IsValidAndBuilt())
+                {
+                    continue;
+                }
+
+                bool matches = partnerIsDistribution
+                    ? building.consumerProducer?.productionLogic is DistributionProductionLogic distribution &&
+                      CenterState.Contains(distribution, resource)
+                    : building.consumerProducer?.productionLogic is CollectionProductionLogic collection &&
+                      CenterState.Contains(collection, resource);
+                if (matches)
+                {
+                    names.Add(TransitTip.BuildingName(building));
+                }
+            }
+        }
+
+        private static string DescribeLink(
+            object center,
+            List<string> partners,
+            bool missing,
+            bool blocked)
+        {
+            string partnerLabel = center is DistributionProductionLogic ? "搜集中心" : "配送中心";
+            StringBuilder text = new StringBuilder();
+            if (missing || partners == null || partners.Count == 0)
+            {
+                text.Append("没有配对的");
+                text.Append(partnerLabel);
+            }
+            else
+            {
+                text.Append("配对");
+                text.Append(partnerLabel);
+                for (int i = 0; i < partners.Count; i++)
+                {
+                    text.Append("\n  ");
+                    text.Append(partners[i]);
+                }
+            }
+
+            if (blocked)
+            {
+                text.Append("\n货车无法从搜集中心开到配送中心");
+            }
+
+            return text.ToString();
+        }
+
         private static int GetStorage(ConsumerProducer consumerProducer, Resource resource)
         {
             int index = Array.IndexOf(consumerProducer.incomingResources, resource);
@@ -1890,6 +1980,7 @@ namespace InfraSpaceMultiResourceLogistics
         internal NativeCenterPanelController controller;
         internal Resource resource;
         internal bool roadBlocked;
+        internal string linkTip;
 
         public void OnPointerDown(PointerEventData eventData)
         {

@@ -13,7 +13,23 @@ namespace InfraSpaceMultiResourceLogistics
 
         private static readonly object RoadGate = new object();
 
+        private static readonly object ReachGate = new object();
+
+        private const int ReachChecksPerFrame = 1;
+
         private static readonly Dictionary<long, int> nextDistributionIndex = new Dictionary<long, int>();
+
+        private static readonly Dictionary<long, List<ConsumerProducer>> pendingConsumers =
+            new Dictionary<long, List<ConsumerProducer>>();
+
+        private static readonly Dictionary<long, int> recheckIndex = new Dictionary<long, int>();
+
+        private static readonly Dictionary<long, int> lastReachQueryFrame = new Dictionary<long, int>();
+
+        private static readonly Dictionary<long, Dictionary<long, bool>> distributionReachable =
+            new Dictionary<long, Dictionary<long, bool>>();
+
+        private static int distributionQueriesArmedFrame = -1;
 
         private static readonly Dictionary<CenterLink, bool> roadBlocked = new Dictionary<CenterLink, bool>();
 
@@ -35,8 +51,14 @@ namespace InfraSpaceMultiResourceLogistics
 
         internal static void UpdateDistribution(DistributionProductionLogic center)
         {
-            if (!center.consumerProducer.building.IsValidAndBuilt() ||
-                (Old.GetSimulator().GetSimulationFrame() + center.consumerProducer.building.GetID()) % 20 != 0L)
+            if (!center.consumerProducer.building.IsValidAndBuilt())
+            {
+                return;
+            }
+
+            // 读档重连发生在路网重建期间。那里寻路会和路网后处理互相等待，所以改到模拟跑起来后再查。
+            AdvanceDistributionReach(center);
+            if ((Old.GetSimulator().GetSimulationFrame() + center.consumerProducer.building.GetID()) % 20 != 0L)
             {
                 return;
             }
@@ -497,37 +519,14 @@ namespace InfraSpaceMultiResourceLogistics
                 return;
             }
 
-            Vector2 position = center.consumerProducer.building.GetPosition().ToVector2XZ();
-            foreach (Resource resource in CenterState.GetResources(center))
+            Building source = center.consumerProducer.building;
+            List<ConsumerProducer> candidates = CollectConsumersInRange(center, source, registry);
+            lock (ReachGate)
             {
-                if (!registry.consumers.TryGetValue(resource, out HashSet<ConsumerProducer> consumers))
-                {
-                    continue;
-                }
-
-                foreach (ConsumerProducer consumer in consumers)
-                {
-                    if (!consumer.building.IsValidAndBuilt() ||
-                        Vector2.SqrMagnitude(consumer.building.GetPosition().ToVector2XZ() - position) >
-                        center.distributionRadius * center.distributionRadius)
-                    {
-                        continue;
-                    }
-
-                    if (!consumer.connectedDistributionCenters.TryGetValue(
-                            resource, out List<DistributionProductionLogic> centers))
-                    {
-                        centers = new List<DistributionProductionLogic>();
-                        consumer.connectedDistributionCenters[resource] = centers;
-                    }
-
-                    if (!centers.Contains(center))
-                    {
-                        centers.Add(center);
-                    }
-
-                    center.connectedConsumers.Add(consumer);
-                }
+                distributionQueriesArmedFrame = Time.frameCount;
+                pendingConsumers[source.GetID()] = candidates;
+                distributionReachable.Remove(source.GetID());
+                recheckIndex.Remove(source.GetID());
             }
         }
 
@@ -573,11 +572,15 @@ namespace InfraSpaceMultiResourceLogistics
             {
                 foreach (DistributionProductionLogic center in registry.distributionCenters)
                 {
-                    if (CenterState.Contains(center, resource) &&
-                        IsInRange(position, center.consumerProducer.building, center.distributionRadius))
+                    Building source = center.consumerProducer?.building;
+                    if (!CenterState.Contains(center, resource) ||
+                        !IsInRange(position, source, center.distributionRadius))
                     {
-                        AddConnection(consumerProducer, resource, center);
+                        continue;
                     }
+
+                    // 先排队，等模拟帧再确认货车能否到达。读档时不寻路。
+                    EnqueueDistributionCandidate(source, consumerProducer);
                 }
             }
         }
@@ -1016,9 +1019,301 @@ namespace InfraSpaceMultiResourceLogistics
             return resources == null ? -1 : Array.IndexOf(resources, resource);
         }
 
+        private static void AdvanceDistributionReach(DistributionProductionLogic center)
+        {
+            Building source = center.consumerProducer.building;
+            if (!DistributionQueriesAllowed(source.GetID()))
+            {
+                return;
+            }
+
+            long centerId = source.GetID();
+            RefillPendingIfDue(center, source);
+            for (int i = 0; i < ReachChecksPerFrame; i++)
+            {
+                ConsumerProducer pending = TakePending(centerId);
+                if (pending == null)
+                {
+                    RecheckOneDistributionLink(center, source);
+                    return;
+                }
+
+                ApplyDistributionReach(center, source, pending);
+            }
+        }
+
+        private static bool DistributionQueriesAllowed(long centerId)
+        {
+            if (distributionQueriesArmedFrame < 0 ||
+                Time.frameCount <= distributionQueriesArmedFrame ||
+                Time.timeScale <= 0f)
+            {
+                return false;
+            }
+
+            lock (ReachGate)
+            {
+                if (lastReachQueryFrame.TryGetValue(centerId, out int frame) && frame == Time.frameCount)
+                {
+                    return false;
+                }
+
+                lastReachQueryFrame[centerId] = Time.frameCount;
+            }
+
+            return true;
+        }
+
+        private static void ApplyDistributionReach(
+            DistributionProductionLogic center,
+            Building source,
+            ConsumerProducer consumer)
+        {
+            Building destination = consumer?.building;
+            bool reachable = destination != null &&
+                             destination.IsValidAndBuilt() &&
+                             IsInRange(source.GetPosition().ToVector2XZ(), destination, center.distributionRadius) &&
+                             CanDeliverTo(source, destination);
+            RememberDistributionReach(source.GetID(), destination == null ? 0L : destination.GetID(), reachable);
+            if (reachable)
+            {
+                LinkDistribution(center, consumer);
+                return;
+            }
+
+            UnlinkDistribution(center, consumer);
+        }
+
+        private static void RecheckOneDistributionLink(DistributionProductionLogic center, Building source)
+        {
+            ConsumerProducer[] linked = center.connectedConsumers.ToArray();
+            if (linked.Length == 0)
+            {
+                return;
+            }
+
+            int index;
+            lock (ReachGate)
+            {
+                recheckIndex.TryGetValue(source.GetID(), out index);
+                if (index < 0 || index >= linked.Length)
+                {
+                    index = 0;
+                }
+
+                recheckIndex[source.GetID()] = index + 1;
+            }
+
+            ApplyDistributionReach(center, source, linked[index]);
+        }
+
+        private static void RefillPendingIfDue(DistributionProductionLogic center, Building source)
+        {
+            long frame = Old.GetSimulator().GetSimulationFrame();
+            if ((frame + source.GetID()) % 300 != 0L)
+            {
+                return;
+            }
+
+            Registry registry = WorldScripts.Inst?.registry;
+            if (registry == null)
+            {
+                return;
+            }
+
+            List<ConsumerProducer> candidates = CollectConsumersInRange(center, source, registry);
+            lock (ReachGate)
+            {
+                if (pendingConsumers.TryGetValue(source.GetID(), out List<ConsumerProducer> pending) &&
+                    pending.Count > 0)
+                {
+                    return;
+                }
+
+                pendingConsumers[source.GetID()] = candidates;
+            }
+        }
+
+        private static List<ConsumerProducer> CollectConsumersInRange(
+            DistributionProductionLogic center,
+            Building source,
+            Registry registry)
+        {
+            List<ConsumerProducer> candidates = new List<ConsumerProducer>();
+            HashSet<ConsumerProducer> seen = new HashSet<ConsumerProducer>();
+            Vector2 position = source.GetPosition().ToVector2XZ();
+            foreach (Resource resource in CenterState.GetResources(center))
+            {
+                if (resource == null ||
+                    !registry.consumers.TryGetValue(resource, out HashSet<ConsumerProducer> consumers))
+                {
+                    continue;
+                }
+
+                foreach (ConsumerProducer consumer in consumers)
+                {
+                    Building destination = consumer?.building;
+                    if (destination != null &&
+                        destination.IsValidAndBuilt() &&
+                        IsInRange(position, destination, center.distributionRadius) &&
+                        seen.Add(consumer))
+                    {
+                        candidates.Add(consumer);
+                    }
+                }
+            }
+
+            return candidates;
+        }
+
+        private static void EnqueueDistributionCandidate(Building source, ConsumerProducer consumer)
+        {
+            if (source == null || consumer == null)
+            {
+                return;
+            }
+
+            lock (ReachGate)
+            {
+                distributionQueriesArmedFrame = Time.frameCount;
+                long centerId = source.GetID();
+                if (!pendingConsumers.TryGetValue(centerId, out List<ConsumerProducer> pending))
+                {
+                    pending = new List<ConsumerProducer>();
+                    pendingConsumers[centerId] = pending;
+                }
+
+                if (!pending.Contains(consumer))
+                {
+                    pending.Add(consumer);
+                }
+            }
+        }
+
+        private static ConsumerProducer TakePending(long centerId)
+        {
+            lock (ReachGate)
+            {
+                if (!pendingConsumers.TryGetValue(centerId, out List<ConsumerProducer> pending) ||
+                    pending.Count == 0)
+                {
+                    return null;
+                }
+
+                int last = pending.Count - 1;
+                ConsumerProducer consumer = pending[last];
+                pending.RemoveAt(last);
+                return consumer;
+            }
+        }
+
+        private static void LinkDistribution(DistributionProductionLogic center, ConsumerProducer consumer)
+        {
+            foreach (Resource resource in CenterState.GetResources(center))
+            {
+                if (IndexOf(consumer.incomingResources, resource) < 0)
+                {
+                    continue;
+                }
+
+                if (consumer.connectedDistributionCenters != null &&
+                    consumer.connectedDistributionCenters.TryGetValue(
+                        resource,
+                        out List<DistributionProductionLogic> centers) &&
+                    centers != null &&
+                    centers.Contains(center))
+                {
+                    if (!center.connectedConsumers.Contains(consumer))
+                    {
+                        center.connectedConsumers.Add(consumer);
+                    }
+
+                    continue;
+                }
+
+                AddConnection(consumer, resource, center);
+            }
+        }
+
+        private static void RememberDistributionReach(long centerId, long buildingId, bool reachable)
+        {
+            if (buildingId == 0L)
+            {
+                return;
+            }
+
+            lock (ReachGate)
+            {
+                if (!distributionReachable.TryGetValue(centerId, out Dictionary<long, bool> results))
+                {
+                    results = new Dictionary<long, bool>();
+                    distributionReachable[centerId] = results;
+                }
+
+                results[buildingId] = reachable;
+            }
+        }
+
+        internal static bool IsKnownUnreachable(Building center, Building building)
+        {
+            if (center == null || building == null)
+            {
+                return false;
+            }
+
+            lock (ReachGate)
+            {
+                return distributionReachable.TryGetValue(center.GetID(), out Dictionary<long, bool> results) &&
+                       results.TryGetValue(building.GetID(), out bool reachable) &&
+                       !reachable;
+            }
+        }
+
+        private static void UnlinkDistribution(DistributionProductionLogic center, ConsumerProducer consumer)
+        {
+            while (center.connectedConsumers.Remove(consumer))
+            {
+            }
+
+            if (consumer?.connectedDistributionCenters == null)
+            {
+                return;
+            }
+
+            foreach (List<DistributionProductionLogic> centers in consumer.connectedDistributionCenters.Values)
+            {
+                centers?.Remove(center);
+            }
+        }
+
+        // 配送货车从配送中心开往消费建筑。没有车道时寻路可能误判为可达，所以先看进出口。
+        private static bool CanDeliverTo(Building source, Building destination)
+        {
+            if (source == null || destination == null || !source.IsValid() || !destination.IsValid())
+            {
+                return false;
+            }
+
+            if (!source.HasAnyOutgoingLane() || !destination.HasAnyIncomingLane())
+            {
+                return false;
+            }
+
+            try
+            {
+                List<PathPart> path = PathFinderFacadeRoads.GetPath(source, destination);
+                return path != null && path.Count > 0;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         private static bool IsInRange(Vector2 origin, Building building, float radius)
         {
-            return building.IsValidAndBuilt() &&
+            return building != null &&
+                   building.IsValidAndBuilt() &&
                    Vector2.SqrMagnitude(building.GetPosition().ToVector2XZ() - origin) <= radius * radius;
         }
 

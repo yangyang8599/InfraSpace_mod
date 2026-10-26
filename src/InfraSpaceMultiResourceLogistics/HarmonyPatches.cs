@@ -249,6 +249,36 @@ namespace InfraSpaceMultiResourceLogistics
             }
         }
 
+        // 不再挂上配送关系后，范围内无路的建筑会变成黄色。黄色只表示范围外，这里改回红色。
+        internal static void PaintUnlinkedInRange(
+            Building center,
+            Building covered,
+            float radius,
+            ref Material result)
+        {
+            VisualizationManager visualization = WorldScripts.Inst?.visualizationManager;
+            if (visualization == null ||
+                center == null ||
+                covered == null ||
+                result != visualization.scaleMatYellow)
+            {
+                return;
+            }
+
+            float distance = Vector2.SqrMagnitude(
+                covered.GetPosition().ToVector2XZ() - center.GetPosition().ToVector2XZ());
+            if (distance > radius * radius)
+            {
+                return;
+            }
+
+            Material unreachable = UnreachableMaterial(visualization);
+            if (unreachable != null)
+            {
+                result = unreachable;
+            }
+        }
+
         private static Material UnreachableMaterial(VisualizationManager visualization)
         {
             if (unreachableMaterial != null)
@@ -339,7 +369,7 @@ namespace InfraSpaceMultiResourceLogistics
     [HarmonyPatch(typeof(DistributionInfoPanel), nameof(DistributionInfoPanel.GetCustomVisualizationMat))]
     internal static class DistributionRangeReachabilityPatch
     {
-        // 配送货车从配送中心开往消费建筑。黄色仍表示未覆盖。
+        // 配送货车从配送中心开往消费建筑。范围外为黄色，范围内无路为红色。
         private static void Postfix(
             Building building,
             ref Material __result,
@@ -347,6 +377,15 @@ namespace InfraSpaceMultiResourceLogistics
         {
             Building center = ___distributionCenter?.consumerProducer?.building;
             RangeReachability.PaintIfUnreachable(center, building, building, ref __result);
+            if (___distributionCenter != null &&
+                MultiResourceLogisticsEngine.IsKnownUnreachable(center, building))
+            {
+                RangeReachability.PaintUnlinkedInRange(
+                    center,
+                    building,
+                    ___distributionCenter.distributionRadius,
+                    ref __result);
+            }
         }
     }
 
