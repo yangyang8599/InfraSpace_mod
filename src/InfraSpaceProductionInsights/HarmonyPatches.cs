@@ -39,6 +39,11 @@ namespace InfraSpaceProductionInsights
             FinalProductToggle.Install(__instance);
             FinalProductToggle.Sync(__instance);
         }
+
+        private static void Postfix(PrioritizationPanel __instance)
+        {
+            ProductionSummary.Refresh(__instance);
+        }
     }
 
     [HarmonyPatch(typeof(PrioritizationItem), nameof(PrioritizationItem.CustomUpdate))]
