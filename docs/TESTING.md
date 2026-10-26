@@ -32,6 +32,7 @@ dotnet build .\InfraSpaceMods.sln -c Release
 ### Production Insights
 
 - 生产概览的筛选、排序和需求显示正常；
+- 电力可视化中，不同电网的供电范围颜色不同，同一电网的范围同色；建筑颜色保持原版；
 - 大型存档打开面板时无明显卡顿或异常日志；
 - 只读功能不改变模拟数据；但存档的 `scriptMods` 仍引用本 Mod，不能直接卸载后加载。
 

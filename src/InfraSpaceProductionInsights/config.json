@@ -1,7 +1,7 @@
 {
   "name": "InfraSpaceProductionInsights",
   "author": "yangy",
-  "description": "Improve the production overview with empty-row filtering and final-product demand analysis.",
+  "description": "Improve the production overview, and color each power grid's supply range separately.",
   "version": "1.0.0",
   "url": ""
 }

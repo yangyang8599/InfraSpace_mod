@@ -107,4 +107,28 @@ namespace InfraSpaceProductionInsights
                 && value == 0d;
         }
     }
+
+    [HarmonyPatch(typeof(VisualizationManager), nameof(VisualizationManager.Update))]
+    internal static class PreparePowerRangeColorsPatch
+    {
+        // 不跳过原版 Update。Prefix 只准备电网配色；Postfix 关掉原版那张不分电网的范围贴花。
+        private static void Prefix(VisualizationManager __instance, bool force)
+        {
+            PowerGridColors.Prepare(__instance, force);
+        }
+
+        private static void Postfix()
+        {
+            PowerGridColors.HideUnifiedRange();
+        }
+    }
+
+    [HarmonyPatch(typeof(Building), nameof(Building.UpdateDecalsVisible))]
+    internal static class ColorPowerRangePatch
+    {
+        private static void Postfix(Building __instance)
+        {
+            PowerGridColors.ShowRange(__instance);
+        }
+    }
 }

@@ -5,7 +5,7 @@
 ## Mod
 
 - **InfraSpaceConstructionTools**：批量移动、蓝图复制、道路磁吸开关、铁路链式升级。
-- **InfraSpaceProductionInsights**：生产概览空行筛选与最终产物需求反推。
+- **InfraSpaceProductionInsights**：生产概览空行筛选、最终产物需求反推，以及电力可视化的供电范围分色。
 - **InfraSpaceMultiResourceLogistics**：让收集中心和配送中心同时处理多种物资。
 - **InfraSpaceStationTools**：车站轨道/道路端口方向、镜像及列车出生方向辅助。
 

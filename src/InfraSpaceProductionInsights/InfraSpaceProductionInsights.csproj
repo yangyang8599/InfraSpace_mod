@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <Reference Include="Assembly-CSharp" HintPath="$(GameManagedPath)\Assembly-CSharp.dll" Private="false" />
+    <Reference Include="DionicCore" HintPath="$(GameManagedPath)\DionicCore.dll" Private="false" />
     <Reference Include="DionicGame" HintPath="$(GameManagedPath)\DionicGame.dll" Private="false" />
     <Reference Include="InfraSpaceCore" HintPath="$(GameManagedPath)\InfraSpaceCore.dll" Private="false" />
     <Reference Include="old" HintPath="$(GameManagedPath)\old.dll" Private="false" />
