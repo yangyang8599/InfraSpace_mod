@@ -25,11 +25,16 @@ namespace InfraSpaceProductionInsights
         private static Color rowTint = Color.white;
         private static Sprite dividerSprite;
         private static Color dividerColor;
-        private static float rowHeight = 40f;
+        private static Vector2 buttonSize = new Vector2(48f, 48f);
+        private static Vector2 gridSpacing = new Vector2(6f, 6f);
+        private static int gridColumns = 8;
+        private static LayoutElement viewportLayout;
+        private static float panelHeight = 320f;
         private static TMP_Text titleStyle;
         private static Material highlight;
         private static VisualizationPanel hookedPanel;
         private static int signature = int.MinValue;
+        private static bool painting;
         private static bool loggedFailure;
 
         internal static bool HasSelection
@@ -184,8 +189,8 @@ namespace InfraSpaceProductionInsights
             Image viewportImage = viewport.gameObject.AddComponent<Image>();
             viewportImage.color = new Color(1f, 1f, 1f, 0.01f);
             viewport.gameObject.AddComponent<Mask>().showMaskGraphic = false;
-            LayoutElement viewportLayout = viewport.gameObject.AddComponent<LayoutElement>();
-            viewportLayout.flexibleHeight = 1f;
+            viewportLayout = viewport.gameObject.AddComponent<LayoutElement>();
+            viewportLayout.flexibleHeight = 0f;
             viewportLayout.preferredHeight = 260f;
             Stretch(viewport);
 
@@ -195,13 +200,14 @@ namespace InfraSpaceProductionInsights
             content.pivot = new Vector2(0.5f, 1f);
             content.anchoredPosition = Vector2.zero;
             content.sizeDelta = new Vector2(0f, 0f);
-            VerticalLayoutGroup layout = content.gameObject.AddComponent<VerticalLayoutGroup>();
-            layout.spacing = 4f;
+            GridLayoutGroup layout = content.gameObject.AddComponent<GridLayoutGroup>();
+            layout.cellSize = buttonSize;
+            layout.spacing = gridSpacing;
+            layout.startCorner = GridLayoutGroup.Corner.UpperLeft;
+            layout.startAxis = GridLayoutGroup.Axis.Horizontal;
             layout.childAlignment = TextAnchor.UpperLeft;
-            layout.childControlWidth = true;
-            layout.childControlHeight = true;
-            layout.childForceExpandWidth = true;
-            layout.childForceExpandHeight = false;
+            layout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+            layout.constraintCount = Mathf.Max(1, gridColumns);
             ContentSizeFitter fitter = content.gameObject.AddComponent<ContentSizeFitter>();
             fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
             fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
@@ -210,7 +216,7 @@ namespace InfraSpaceProductionInsights
             scroll.viewport = viewport;
             scroll.content = content;
             scroll.horizontal = false;
-            scroll.vertical = true;
+            scroll.vertical = false;
             scroll.movementType = ScrollRect.MovementType.Clamped;
             scroll.scrollSensitivity = 28f;
             Hook(panel);
@@ -245,9 +251,9 @@ namespace InfraSpaceProductionInsights
             signature = nextSignature;
             for (int i = 0; i < Rows.Count; i++)
             {
-                if (Rows[i].Button != null)
+                if (Rows[i].Root != null)
                 {
-                    UnityEngine.Object.Destroy(Rows[i].Button.gameObject);
+                    UnityEngine.Object.Destroy(Rows[i].Root);
                 }
             }
 
@@ -270,50 +276,39 @@ namespace InfraSpaceProductionInsights
             }
 
             PaintSelection();
+            FitToContent();
         }
 
         private static List<ProductCount> Collect()
         {
             var counts = new Dictionary<string, ProductCount>();
+            SeedRecipeProducts(counts);
+
             IEnumerable<Building> buildings = WorldScripts.Inst?.registry?.builtBuildings;
-            if (buildings == null)
+            if (buildings != null)
             {
-                return new List<ProductCount>();
-            }
-
-            foreach (Building building in buildings)
-            {
-                if (building == null || !building.IsValidAndBuilt())
+                foreach (Building building in buildings)
                 {
-                    continue;
-                }
-
-                if (!(building.consumerProducer?.productionLogic is FactoryProductionLogic factory))
-                {
-                    continue;
-                }
-
-                List<Resource> products = factory.GetProducables();
-                if (products == null)
-                {
-                    continue;
-                }
-
-                for (int i = 0; i < products.Count; i++)
-                {
-                    Resource resource = products[i];
-                    if (resource == null || string.IsNullOrEmpty(resource.name))
+                    if (building == null || !building.IsValidAndBuilt())
                     {
                         continue;
                     }
 
-                    if (!counts.TryGetValue(resource.name, out ProductCount count))
+                    if (!(building.consumerProducer?.productionLogic is FactoryProductionLogic factory))
                     {
-                        count = new ProductCount { Resource = resource, Count = 0 };
-                        counts.Add(resource.name, count);
+                        continue;
                     }
 
-                    count.Count++;
+                    List<Resource> products = factory.GetProducables();
+                    if (products == null)
+                    {
+                        continue;
+                    }
+
+                    for (int i = 0; i < products.Count; i++)
+                    {
+                        AddProduct(counts, products[i], 1);
+                    }
                 }
             }
 
@@ -325,50 +320,113 @@ namespace InfraSpaceProductionInsights
             return list;
         }
 
+        private static void SeedRecipeProducts(Dictionary<string, ProductCount> counts)
+        {
+            Dictionary<string, BuildingDescription> descriptions = Old.GetBuildingModule()?.buildingDescriptions;
+            if (descriptions == null)
+            {
+                return;
+            }
+
+            foreach (BuildingDescription description in descriptions.Values)
+            {
+                if (!(description?.GetCachedProductionLogic() is FactoryProductionLogic factory))
+                {
+                    continue;
+                }
+
+                List<ResourceCost> products = factory.productionDefinition?.producables;
+                if (products == null)
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < products.Count; i++)
+                {
+                    ResourceCost cost = products[i];
+                    Resource resource = cost.resource;
+                    if (resource == null && !string.IsNullOrEmpty(cost.resourceName))
+                    {
+                        resource = Resource.Get(cost.resourceName);
+                    }
+
+                    AddProduct(counts, resource, 0);
+                }
+            }
+        }
+
+        private static void AddProduct(Dictionary<string, ProductCount> counts, Resource resource, int amount)
+        {
+            if (resource == null || string.IsNullOrEmpty(resource.name))
+            {
+                return;
+            }
+
+            if (!counts.TryGetValue(resource.name, out ProductCount count))
+            {
+                count = new ProductCount { Resource = resource, Count = 0 };
+                counts.Add(resource.name, count);
+            }
+
+            count.Count += amount;
+        }
+
         private static ProductRow CreateRow(ProductCount product)
         {
-            RectTransform row = CreateChild("Row", content);
-            Image image = row.gameObject.AddComponent<Image>();
-            ApplySprite(image, rowSprite, rowTint);
-            Button button = row.gameObject.AddComponent<Button>();
-            button.targetGraphic = image;
-            button.transition = Selectable.Transition.SpriteSwap;
-            SpriteState sprites = button.spriteState;
-            sprites.highlightedSprite = rowHoverSprite;
-            sprites.pressedSprite = rowSelectedSprite;
-            sprites.selectedSprite = rowSelectedSprite;
-            button.spriteState = sprites;
-            LayoutElement layout = row.gameObject.AddComponent<LayoutElement>();
-            layout.preferredHeight = rowHeight;
-            layout.minHeight = rowHeight;
+            RectTransform cell = CreateChild("Product", content);
+            ToggleButton template = hookedPanel != null ? hookedPanel.buttonTemplate : null;
+            ToggleButton toggle = template == null
+                ? null
+                : UnityEngine.Object.Instantiate(template, cell);
+            if (toggle == null)
+            {
+                return new ProductRow { Root = cell.gameObject, Resource = product.Resource };
+            }
 
-            float iconSize = Mathf.Clamp(rowHeight - 12f, 22f, 32f);
-            RectTransform icon = CreateChild("Icon", row);
-            icon.anchorMin = new Vector2(0f, 0.5f);
-            icon.anchorMax = new Vector2(0f, 0.5f);
-            icon.pivot = new Vector2(0f, 0.5f);
-            icon.anchoredPosition = new Vector2(8f, 0f);
-            icon.sizeDelta = new Vector2(iconSize, iconSize);
-            Image iconImage = icon.gameObject.AddComponent<Image>();
-            iconImage.sprite = product.Resource.GetSprite();
-            iconImage.preserveAspect = true;
-            iconImage.raycastTarget = false;
+            toggle.gameObject.SetActive(true);
+            toggle.isEscapable = false;
+            RectTransform buttonRect = toggle.GetComponent<RectTransform>();
+            buttonRect.anchorMin = new Vector2(0.5f, 0.5f);
+            buttonRect.anchorMax = new Vector2(0.5f, 0.5f);
+            buttonRect.pivot = new Vector2(0.5f, 0.5f);
+            buttonRect.anchoredPosition = Vector2.zero;
+            buttonRect.sizeDelta = buttonSize;
+            buttonRect.localScale = Vector3.one;
+            if (toggle.image != null)
+            {
+                toggle.image.sprite = product.Resource.GetSprite();
+                toggle.image.preserveAspect = true;
+                toggle.image.raycastTarget = false;
+            }
 
-            RectTransform label = CreateChild("Label", row);
-            label.anchorMin = new Vector2(0f, 0f);
-            label.anchorMax = new Vector2(1f, 1f);
-            label.offsetMin = new Vector2(iconSize + 16f, 2f);
-            label.offsetMax = new Vector2(-10f, -2f);
-            TextMeshProUGUI text = label.gameObject.AddComponent<TextMeshProUGUI>();
-            ApplyTextStyle(text, titleStyle, false);
-            text.alignment = TextAlignmentOptions.MidlineLeft;
-            text.overflowMode = TextOverflowModes.Ellipsis;
-            text.raycastTarget = false;
-            text.text = product.Resource.GetNameInGame() + "  " + product.Count;
+            if (toggle.text != null)
+            {
+                toggle.text.gameObject.SetActive(false);
+            }
+
+            RectTransform countRect = CreateChild("Count", buttonRect);
+            countRect.anchorMin = new Vector2(0f, 0f);
+            countRect.anchorMax = new Vector2(1f, 0f);
+            countRect.pivot = new Vector2(0.5f, 0f);
+            countRect.anchoredPosition = new Vector2(0f, 0f);
+            countRect.sizeDelta = new Vector2(-2f, 24f);
+            TextMeshProUGUI count = countRect.gameObject.AddComponent<TextMeshProUGUI>();
+            ApplyTextStyle(count, titleStyle, false);
+            count.fontSize = Mathf.Clamp(buttonSize.y * 0.42f, 18f, 26f);
+            count.alignment = TextAlignmentOptions.Bottom;
+            count.overflowMode = TextOverflowModes.Overflow;
+            count.raycastTarget = false;
+            count.text = product.Count.ToString();
+
+            TooltipHoverable tooltip = toggle.GetComponent<TooltipHoverable>();
+            if (tooltip != null)
+            {
+                tooltip.Init(product.Resource.GetNameInGame(), product.Count.ToString());
+            }
 
             Resource resource = product.Resource;
-            button.onClick.AddListener(delegate { Toggle(resource); });
-            return new ProductRow { Button = button, Background = image, Resource = resource };
+            toggle.onChanged.AddListener(delegate { SyncRow(toggle, resource); });
+            return new ProductRow { Root = cell.gameObject, Toggle = toggle, Resource = resource };
         }
 
         private static void CreateHeader(RectTransform parent)
@@ -396,20 +454,55 @@ namespace InfraSpaceProductionInsights
             image.raycastTarget = false;
         }
 
+        private static void SyncRow(ToggleButton toggle, Resource resource)
+        {
+            if (painting || toggle == null)
+            {
+                return;
+            }
+
+            if (toggle.isPressed)
+            {
+                selected = resource;
+                painting = true;
+                for (int i = 0; i < Rows.Count; i++)
+                {
+                    ToggleButton other = Rows[i].Toggle;
+                    if (other != null && other != toggle && other.isPressed)
+                    {
+                        other.SetIsPressed(false, false);
+                    }
+                }
+
+                painting = false;
+            }
+            else if (Same(selected, resource))
+            {
+                selected = null;
+            }
+
+            WorldScripts.Inst?.visualizationManager?.MarkDirty();
+        }
+
         private static void PaintSelection()
         {
+            painting = true;
             for (int i = 0; i < Rows.Count; i++)
             {
-                ProductRow row = Rows[i];
-                if (row.Background == null || row.Button == null)
+                ToggleButton toggle = Rows[i].Toggle;
+                if (toggle == null)
                 {
                     continue;
                 }
 
-                bool chosen = selected != null && Same(row.Resource, selected);
-                row.Button.transition = chosen ? Selectable.Transition.None : Selectable.Transition.SpriteSwap;
-                ApplySprite(row.Background, chosen ? rowSelectedSprite ?? rowSprite : rowSprite, rowTint);
+                bool chosen = selected != null && Same(Rows[i].Resource, selected);
+                if (toggle.isPressed != chosen)
+                {
+                    toggle.SetIsPressed(chosen, false);
+                }
             }
+
+            painting = false;
         }
 
         private static void CaptureStyle(VisualizationPanel panel)
@@ -435,10 +528,14 @@ namespace InfraSpaceProductionInsights
                 }
 
                 float height = template.GetComponent<RectTransform>().rect.height;
-                if (height >= 28f && height <= 72f)
+                Vector2 size = template.GetComponent<RectTransform>().sizeDelta;
+                if (size.x < 8f || size.y < 8f)
                 {
-                    rowHeight = height;
+                    size = new Vector2(Mathf.Max(height, 48f), Mathf.Max(height, 48f));
                 }
+
+                buttonSize = size;
+                MeasureGrid(panel, size);
             }
 
             titleStyle = FindTitle(panel);
@@ -452,6 +549,69 @@ namespace InfraSpaceProductionInsights
             {
                 dividerSprite = null;
                 dividerColor = FallbackDivider;
+            }
+        }
+
+        private static void MeasureGrid(VisualizationPanel panel, Vector2 size)
+        {
+            gridSpacing = new Vector2(6f, 6f);
+            gridColumns = 0;
+            RectTransform group = panel.buttonGroup != null ? panel.buttonGroup.GetComponent<RectTransform>() : null;
+            GridLayoutGroup layout = group != null ? group.GetComponent<GridLayoutGroup>() : null;
+            if (layout != null)
+            {
+                if (layout.cellSize.x >= 8f && layout.cellSize.y >= 8f)
+                {
+                    buttonSize = layout.cellSize;
+                }
+
+                gridSpacing = layout.spacing;
+                if (layout.constraint == GridLayoutGroup.Constraint.FixedColumnCount && layout.constraintCount > 0)
+                {
+                    gridColumns = layout.constraintCount;
+                }
+            }
+
+            if (group != null && gridColumns <= 0)
+            {
+                ToggleButton[] buttons = group.GetComponentsInChildren<ToggleButton>(false);
+                float rowY = 0f;
+                bool hasRow = false;
+                int columns = 0;
+                for (int i = 0; i < buttons.Length; i++)
+                {
+                    if (buttons[i] == panel.buttonTemplate)
+                    {
+                        continue;
+                    }
+
+                    float y = buttons[i].GetComponent<RectTransform>().anchoredPosition.y;
+                    if (!hasRow)
+                    {
+                        rowY = y;
+                        hasRow = true;
+                        columns = 1;
+                        continue;
+                    }
+
+                    if (Mathf.Abs(y - rowY) > 2f)
+                    {
+                        break;
+                    }
+
+                    columns++;
+                }
+
+                if (columns > 0)
+                {
+                    gridColumns = columns;
+                }
+            }
+
+            if (gridColumns <= 0)
+            {
+                float width = panel.GetComponent<RectTransform>().rect.width - 20f;
+                gridColumns = Mathf.Max(1, Mathf.FloorToInt((width + gridSpacing.x) / (size.x + gridSpacing.x)));
             }
         }
 
@@ -602,9 +762,22 @@ namespace InfraSpaceProductionInsights
             rootRect.anchorMin = new Vector2(0.5f, 0.5f);
             rootRect.anchorMax = new Vector2(0.5f, 0.5f);
             rootRect.pivot = new Vector2(0f, 1f);
-            rootRect.sizeDelta = new Vector2(width, 320f);
+            rootRect.sizeDelta = new Vector2(width, panelHeight);
             rootRect.anchoredPosition = local + new Vector2(0f, -4f);
             root.transform.SetAsLastSibling();
+        }
+
+        private static void FitToContent()
+        {
+            int columns = Mathf.Max(1, gridColumns);
+            int rows = Mathf.Max(1, (Rows.Count + columns - 1) / columns);
+            float gridHeight = rows * buttonSize.y + Mathf.Max(0, rows - 1) * gridSpacing.y;
+            float header = titleStyle != null ? titleStyle.fontSize + 6f : 28f;
+            panelHeight = 18f + header + 12f + 3f + gridHeight;
+            if (viewportLayout != null)
+            {
+                viewportLayout.preferredHeight = gridHeight;
+            }
         }
 
         private static bool Produces(Building building, Resource resource)
@@ -720,8 +893,8 @@ namespace InfraSpaceProductionInsights
 
         private struct ProductRow
         {
-            internal Button Button;
-            internal Image Background;
+            internal GameObject Root;
+            internal ToggleButton Toggle;
             internal Resource Resource;
         }
     }
