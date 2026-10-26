@@ -55,7 +55,10 @@ namespace InfraSpaceMultiResourceLogistics
                     resourceNames = new List<string>(settings.resourceNames),
                     capacities = settings.capacities == null
                         ? new Dictionary<string, int>()
-                        : new Dictionary<string, int>(settings.capacities)
+                        : new Dictionary<string, int>(settings.capacities),
+                    storageOnly = settings.storageOnly == null
+                        ? new List<string>()
+                        : new List<string>(settings.storageOnly)
                 };
                 target.consumerProducer?.ResetConsumablesProducables();
             }

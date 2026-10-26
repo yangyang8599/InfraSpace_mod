@@ -398,7 +398,7 @@ namespace InfraSpaceMultiResourceLogistics
             HashSet<string> carried = new HashSet<string>();
             foreach (Resource resource in CenterState.GetResources(center))
             {
-                if (resource != null)
+                if (resource != null && !CenterState.IsStorageOnly(center, resource))
                 {
                     carried.Add(resource.name);
                 }
@@ -472,7 +472,8 @@ namespace InfraSpaceMultiResourceLogistics
             Vector2 position = center.consumerProducer.building.GetPosition().ToVector2XZ();
             foreach (Resource resource in CenterState.GetResources(center))
             {
-                if (!registry.producers.TryGetValue(resource, out HashSet<ConsumerProducer> producers))
+                if (CenterState.IsStorageOnly(center, resource) ||
+                    !registry.producers.TryGetValue(resource, out HashSet<ConsumerProducer> producers))
                 {
                     continue;
                 }
@@ -560,7 +561,7 @@ namespace InfraSpaceMultiResourceLogistics
             {
                 foreach (CollectionProductionLogic center in registry.collectionCenters)
                 {
-                    if (CenterState.Contains(center, resource) &&
+                    if (CenterState.Moves(center, resource) &&
                         IsInRange(position, center.consumerProducer.building, center.collectionRadius))
                     {
                         AddConnection(consumerProducer, resource, center);
@@ -573,7 +574,7 @@ namespace InfraSpaceMultiResourceLogistics
                 foreach (DistributionProductionLogic center in registry.distributionCenters)
                 {
                     Building source = center.consumerProducer?.building;
-                    if (!CenterState.Contains(center, resource) ||
+                    if (!CenterState.Moves(center, resource) ||
                         !IsInRange(position, source, center.distributionRadius))
                     {
                         continue;
@@ -621,7 +622,7 @@ namespace InfraSpaceMultiResourceLogistics
                 DistributionProductionLogic distribution =
                     destination?.consumerProducer?.productionLogic as DistributionProductionLogic;
                 if (distribution != null &&
-                    CenterState.Contains(distribution, resource) &&
+                    CenterState.Moves(distribution, resource) &&
                     IsRoadBlocked(source.GetID(), destination.GetID()))
                 {
                     return true;
@@ -645,7 +646,7 @@ namespace InfraSpaceMultiResourceLogistics
                 CollectionProductionLogic collection =
                     source?.consumerProducer?.productionLogic as CollectionProductionLogic;
                 if (collection != null &&
-                    CenterState.Contains(collection, resource) &&
+                    CenterState.Moves(collection, resource) &&
                     IsRoadBlocked(source.GetID(), destination.GetID()))
                 {
                     return true;
@@ -735,7 +736,9 @@ namespace InfraSpaceMultiResourceLogistics
             float bestFill = float.MaxValue;
             foreach (Resource resource in CenterState.GetResources(center))
             {
-                if (!CenterState.Contains(distribution, resource) ||
+                if (CenterState.IsStorageOnly(center, resource) ||
+                    CenterState.IsStorageOnly(distribution, resource) ||
+                    !CenterState.Contains(distribution, resource) ||
                     IndexOf(distribution.consumerProducer.incomingResources, resource) < 0)
                 {
                     continue;
@@ -912,6 +915,11 @@ namespace InfraSpaceMultiResourceLogistics
             int departures = 0;
             foreach (Resource resource in CenterState.GetResources(center))
             {
+                if (CenterState.IsStorageOnly(center, resource))
+                {
+                    continue;
+                }
+
                 int orderAmount = ConsumerProducer.GetOrderAmount(resource);
                 foreach (ConsumerProducer producer in center.connectedProducers.ToArray())
                 {
@@ -1145,6 +1153,7 @@ namespace InfraSpaceMultiResourceLogistics
             foreach (Resource resource in CenterState.GetResources(center))
             {
                 if (resource == null ||
+                    CenterState.IsStorageOnly(center, resource) ||
                     !registry.consumers.TryGetValue(resource, out HashSet<ConsumerProducer> consumers))
                 {
                     continue;
@@ -1211,7 +1220,8 @@ namespace InfraSpaceMultiResourceLogistics
         {
             foreach (Resource resource in CenterState.GetResources(center))
             {
-                if (IndexOf(consumer.incomingResources, resource) < 0)
+                if (CenterState.IsStorageOnly(center, resource) ||
+                    IndexOf(consumer.incomingResources, resource) < 0)
                 {
                     continue;
                 }

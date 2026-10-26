@@ -21,6 +21,12 @@ namespace InfraSpaceMultiResourceLogistics
 
         private static readonly Color RoadWarningColor = new Color(0.86f, 0.16f, 0.14f, 1f);
 
+        private static readonly Color StorageOnlyColor = new Color(0.42f, 0.42f, 0.44f, 1f);
+
+        private static readonly Dictionary<int, Sprite> grayscaleSprites = new Dictionary<int, Sprite>();
+
+        private static readonly Dictionary<int, Texture2D> readableTextures = new Dictionary<int, Texture2D>();
+
         private static object pendingReopenCenter;
         private static int pendingReopenFrames;
 
@@ -180,6 +186,26 @@ namespace InfraSpaceMultiResourceLogistics
             }
 
             RemoveResource(resource);
+        }
+
+        internal void ToggleStorage(Resource resource)
+        {
+            object center = GetCenter();
+            if (center == null || resource == null)
+            {
+                return;
+            }
+
+            if (center is CollectionProductionLogic collection)
+            {
+                CenterState.SetStorageOnly(collection, resource, !CenterState.IsStorageOnly(collection, resource));
+            }
+            else if (center is DistributionProductionLogic distribution)
+            {
+                CenterState.SetStorageOnly(distribution, resource, !CenterState.IsStorageOnly(distribution, resource));
+            }
+
+            ApplyRoadWarnings();
         }
 
         private void Configure(
@@ -675,12 +701,16 @@ namespace InfraSpaceMultiResourceLogistics
                 }
 
                 List<string> partners = PartnerNames(center, resources[i]);
+                bool storageOnly = IsStorageOnly(center, resources[i]);
                 bool missing = partners.Count == 0;
-                bool blocked = !missing && IsRoadBlocked(center, resources[i]);
-                bool warning = missing || blocked;
-                string tip = DescribeLink(center, partners, missing, blocked) + "\n右键移除此物资";
+                bool blocked = !storageOnly && !missing && IsRoadBlocked(center, resources[i]);
+                bool warning = !storageOnly && (missing || blocked);
+                string tip = DescribeResourceTip(center, partners, storageOnly, missing, blocked);
                 ResourceChipButton button = chip.GetComponent<ResourceChipButton>();
-                if (button != null && button.roadBlocked == warning && button.linkTip == tip)
+                if (button != null &&
+                    button.roadBlocked == warning &&
+                    button.storageOnly == storageOnly &&
+                    button.linkTip == tip)
                 {
                     continue;
                 }
@@ -688,13 +718,24 @@ namespace InfraSpaceMultiResourceLogistics
                 if (button != null)
                 {
                     button.roadBlocked = warning;
+                    button.storageOnly = storageOnly;
                     button.linkTip = tip;
                 }
 
                 Image background = chip.GetComponent<Image>();
                 if (background != null)
                 {
-                    background.color = warning ? RoadWarningColor : Color.white;
+                    background.color = storageOnly
+                        ? StorageOnlyColor
+                        : warning ? RoadWarningColor : Color.white;
+                }
+
+                Image icon = chip.transform.Find("Icon")?.GetComponent<Image>();
+                if (icon != null)
+                {
+                    Sprite sprite = resources[i].GetSprite();
+                    icon.sprite = storageOnly ? GrayscaleSprite(sprite) : sprite;
+                    icon.color = Color.white;
                 }
 
                 chip.GetComponent<TooltipHoverable>()?.Init(resources[i].GetNameInGame(), tip);
@@ -1004,9 +1045,10 @@ namespace InfraSpaceMultiResourceLogistics
                 Resource resource = resources[i];
                 float y = i * rowHeight;
                 List<string> partners = PartnerNames(center, resource);
+                bool storageOnly = IsStorageOnly(center, resource);
                 bool missing = partners.Count == 0;
-                bool blocked = !missing && IsRoadBlocked(center, resource);
-                if (missing || blocked)
+                bool blocked = !storageOnly && !missing && IsRoadBlocked(center, resource);
+                if (!storageOnly && (missing || blocked))
                 {
                     Color previous = GUI.color;
                     GUI.color = RoadWarningColor;
@@ -1017,12 +1059,21 @@ namespace InfraSpaceMultiResourceLogistics
                 }
 
                 Rect iconRect = new Rect(3f, y + 3f, rowHeight - 6f, rowHeight - 6f);
-                DrawSprite(resource.GetSprite(), iconRect);
+                Sprite iconSprite = storageOnly ? GrayscaleSprite(resource.GetSprite()) : resource.GetSprite();
+                DrawSprite(iconSprite, iconRect);
+                if (Event.current.type == EventType.MouseDown &&
+                    Event.current.button == 0 &&
+                    iconRect.Contains(Event.current.mousePosition))
+                {
+                    ToggleStorage(resource);
+                    Event.current.Use();
+                }
+
                 if (Event.current.type == EventType.Repaint &&
                     iconRect.Contains(Event.current.mousePosition))
                 {
                     Building building = GetConsumerProducer(center)?.building;
-                    string link = DescribeLink(center, partners, missing, blocked);
+                    string link = DescribeResourceTip(center, partners, storageOnly, missing, blocked);
                     storageHoverTip = building == null
                         ? link
                         : link + "\n" + TransitTip.Describe(building, resource);
@@ -1796,6 +1847,179 @@ namespace InfraSpaceMultiResourceLogistics
             return new Rect(min.x, Screen.height - max.y, max.x - min.x, max.y - min.y);
         }
 
+        private static Sprite GrayscaleSprite(Sprite source)
+        {
+            if (source == null || source.texture == null)
+            {
+                return source;
+            }
+
+            int key = source.GetInstanceID();
+            if (grayscaleSprites.TryGetValue(key, out Sprite cached) && cached != null)
+            {
+                return cached;
+            }
+
+            try
+            {
+                Sprite created = CreateGrayscaleSprite(source);
+                if (created != null)
+                {
+                    grayscaleSprites[key] = created;
+                    return created;
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning("[InfraSpaceMultiResourceLogistics] 物资图标转灰度失败。 " + exception.Message);
+            }
+
+            return source;
+        }
+
+        private static Sprite CreateGrayscaleSprite(Sprite source)
+        {
+            Texture2D readable = ReadableCopy(source.texture);
+            Rect textureRect = source.textureRect;
+            int x = Mathf.Clamp(Mathf.FloorToInt(textureRect.x), 0, readable.width - 1);
+            int y = Mathf.Clamp(Mathf.FloorToInt(textureRect.y), 0, readable.height - 1);
+            int width = Mathf.Clamp(Mathf.RoundToInt(textureRect.width), 1, readable.width - x);
+            int height = Mathf.Clamp(Mathf.RoundToInt(textureRect.height), 1, readable.height - y);
+            Color[] pixels = readable.GetPixels(x, y, width, height);
+            pixels = Upright(pixels, width, height, source.packingRotation, out width, out height);
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                Color pixel = pixels[i];
+                float gray = (pixel.r * 0.299f) + (pixel.g * 0.587f) + (pixel.b * 0.114f);
+                pixels[i] = new Color(gray, gray, gray, pixel.a);
+            }
+
+            Texture2D grayTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            grayTexture.SetPixels(pixels);
+            grayTexture.Apply(false, true);
+            grayTexture.filterMode = source.texture.filterMode;
+            grayTexture.wrapMode = TextureWrapMode.Clamp;
+            return Sprite.Create(
+                grayTexture,
+                new Rect(0f, 0f, width, height),
+                new Vector2(0.5f, 0.5f),
+                source.pixelsPerUnit <= 0f ? 100f : source.pixelsPerUnit);
+        }
+
+        private static Texture2D ReadableCopy(Texture source)
+        {
+            int key = source.GetInstanceID();
+            if (readableTextures.TryGetValue(key, out Texture2D cached) && cached != null)
+            {
+                return cached;
+            }
+
+            RenderTexture temporary = RenderTexture.GetTemporary(
+                source.width,
+                source.height,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Default);
+            Graphics.Blit(source, temporary);
+            RenderTexture previous = RenderTexture.active;
+            RenderTexture.active = temporary;
+            Texture2D copy = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false);
+            copy.ReadPixels(new Rect(0f, 0f, source.width, source.height), 0, 0);
+            copy.Apply(false, false);
+            RenderTexture.active = previous;
+            RenderTexture.ReleaseTemporary(temporary);
+            readableTextures[key] = copy;
+            return copy;
+        }
+
+        private static Color[] Upright(
+            Color[] pixels,
+            int width,
+            int height,
+            SpritePackingRotation rotation,
+            out int uprightWidth,
+            out int uprightHeight)
+        {
+            uprightWidth = width;
+            uprightHeight = height;
+            if (rotation == SpritePackingRotation.None || pixels == null)
+            {
+                return pixels;
+            }
+
+            if (rotation == SpritePackingRotation.Rotate180)
+            {
+                return Rotate180(pixels, width, height);
+            }
+
+            if (rotation == SpritePackingRotation.FlipHorizontal)
+            {
+                return FlipHorizontal(pixels, width, height);
+            }
+
+            if (rotation == SpritePackingRotation.FlipVertical)
+            {
+                return FlipVertical(pixels, width, height);
+            }
+
+            uprightWidth = height;
+            uprightHeight = width;
+            return Rotate90CounterClockwise(pixels, width, height);
+        }
+
+        private static Color[] Rotate90CounterClockwise(Color[] pixels, int width, int height)
+        {
+            Color[] rotated = new Color[pixels.Length];
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    rotated[((width - 1 - x) * height) + y] = pixels[(y * width) + x];
+                }
+            }
+
+            return rotated;
+        }
+
+        private static Color[] Rotate180(Color[] pixels, int width, int height)
+        {
+            Color[] rotated = new Color[pixels.Length];
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                rotated[pixels.Length - 1 - i] = pixels[i];
+            }
+
+            return rotated;
+        }
+
+        private static Color[] FlipHorizontal(Color[] pixels, int width, int height)
+        {
+            Color[] flipped = new Color[pixels.Length];
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    flipped[(y * width) + (width - 1 - x)] = pixels[(y * width) + x];
+                }
+            }
+
+            return flipped;
+        }
+
+        private static Color[] FlipVertical(Color[] pixels, int width, int height)
+        {
+            Color[] flipped = new Color[pixels.Length];
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    flipped[((height - 1 - y) * width) + x] = pixels[(y * width) + x];
+                }
+            }
+
+            return flipped;
+        }
+
         private static void DrawSprite(Sprite sprite, Rect target)
         {
             if (sprite == null || sprite.texture == null)
@@ -1925,9 +2149,9 @@ namespace InfraSpaceMultiResourceLogistics
 
                 bool matches = partnerIsDistribution
                     ? building.consumerProducer?.productionLogic is DistributionProductionLogic distribution &&
-                      CenterState.Contains(distribution, resource)
+                      CenterState.Moves(distribution, resource)
                     : building.consumerProducer?.productionLogic is CollectionProductionLogic collection &&
-                      CenterState.Contains(collection, resource);
+                      CenterState.Moves(collection, resource);
                 if (matches)
                 {
                     names.Add(TransitTip.BuildingName(building));
@@ -1967,6 +2191,41 @@ namespace InfraSpaceMultiResourceLogistics
             return text.ToString();
         }
 
+        private static string DescribeResourceTip(
+            object center,
+            List<string> partners,
+            bool storageOnly,
+            bool missing,
+            bool blocked)
+        {
+            if (storageOnly)
+            {
+                return "仅存储，不搜集也不配送\n左键恢复搜集和配送\n右键移除此物资";
+            }
+
+            return DescribeLink(center, partners, missing, blocked) + "\n左键改为仅存储\n右键移除此物资";
+        }
+
+        private static bool IsStorageOnly(object center, Resource resource)
+        {
+            if (resource == null)
+            {
+                return false;
+            }
+
+            if (center is CollectionProductionLogic collection)
+            {
+                return CenterState.IsStorageOnly(collection, resource);
+            }
+
+            if (center is DistributionProductionLogic distribution)
+            {
+                return CenterState.IsStorageOnly(distribution, resource);
+            }
+
+            return false;
+        }
+
         private static int GetStorage(ConsumerProducer consumerProducer, Resource resource)
         {
             int index = Array.IndexOf(consumerProducer.incomingResources, resource);
@@ -1980,6 +2239,7 @@ namespace InfraSpaceMultiResourceLogistics
         internal NativeCenterPanelController controller;
         internal Resource resource;
         internal bool roadBlocked;
+        internal bool storageOnly;
         internal string linkTip;
 
         public void OnPointerDown(PointerEventData eventData)
@@ -2003,6 +2263,13 @@ namespace InfraSpaceMultiResourceLogistics
             if (eventData.button == PointerEventData.InputButton.Right)
             {
                 controller?.RequestRemove(resource);
+                eventData.Use();
+                return;
+            }
+
+            if (eventData.button == PointerEventData.InputButton.Left)
+            {
+                controller?.ToggleStorage(resource);
                 eventData.Use();
             }
         }

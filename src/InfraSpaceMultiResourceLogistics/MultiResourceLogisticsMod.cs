@@ -79,5 +79,8 @@ namespace InfraSpaceMultiResourceLogistics
         public List<string> resourceNames = new List<string>();
 
         public Dictionary<string, int> capacities = new Dictionary<string, int>();
+
+        // 仅存储的物资名称。缺省或为空表示全部正常搜集和配送。
+        public List<string> storageOnly = new List<string>();
     }
 }

@@ -27,6 +27,46 @@ namespace InfraSpaceMultiResourceLogistics
             return GetResources(center).Contains(resource);
         }
 
+        internal static bool IsStorageOnly(CollectionProductionLogic center, Resource resource)
+        {
+            return IsStorageOnly(center?.consumerProducer, resource);
+        }
+
+        internal static bool IsStorageOnly(DistributionProductionLogic center, Resource resource)
+        {
+            return IsStorageOnly(center?.consumerProducer, resource);
+        }
+
+        internal static bool Moves(CollectionProductionLogic center, Resource resource)
+        {
+            return Contains(center, resource) && !IsStorageOnly(center, resource);
+        }
+
+        internal static bool Moves(DistributionProductionLogic center, Resource resource)
+        {
+            return Contains(center, resource) && !IsStorageOnly(center, resource);
+        }
+
+        internal static void SetStorageOnly(CollectionProductionLogic center, Resource resource, bool storageOnly)
+        {
+            if (!SetStorageOnly(center?.consumerProducer, resource, storageOnly))
+            {
+                return;
+            }
+
+            CollectionDistributionHookup.UpdateCollectionCenter(center, WorldScripts.Inst.registry);
+        }
+
+        internal static void SetStorageOnly(DistributionProductionLogic center, Resource resource, bool storageOnly)
+        {
+            if (!SetStorageOnly(center?.consumerProducer, resource, storageOnly))
+            {
+                return;
+            }
+
+            CollectionDistributionHookup.UpdateDistributionCenter(center, WorldScripts.Inst.registry);
+        }
+
         internal static int GetCapacity(CollectionProductionLogic center, Resource resource)
         {
             return GetCapacity(center.consumerProducer, resource, center.playerStorageLimit);
@@ -83,8 +123,24 @@ namespace InfraSpaceMultiResourceLogistics
             CollectionProductionLogic collection,
             DistributionProductionLogic distribution)
         {
-            HashSet<Resource> collectionResources = new HashSet<Resource>(GetResources(collection));
-            return GetResources(distribution).Any(collectionResources.Contains);
+            HashSet<Resource> collectionResources = new HashSet<Resource>();
+            foreach (Resource resource in GetResources(collection))
+            {
+                if (!IsStorageOnly(collection, resource))
+                {
+                    collectionResources.Add(resource);
+                }
+            }
+
+            foreach (Resource resource in GetResources(distribution))
+            {
+                if (!IsStorageOnly(distribution, resource) && collectionResources.Contains(resource))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static IReadOnlyList<Resource> GetResources(ConsumerProducer consumerProducer, Resource fallback)
@@ -143,6 +199,11 @@ namespace InfraSpaceMultiResourceLogistics
             }
 
             settings.resourceNames = selected.Select(resource => resource.name).ToList();
+            if (settings.storageOnly != null)
+            {
+                settings.storageOnly.RemoveAll(name => !settings.resourceNames.Contains(name));
+            }
+
             if (settings.capacities == null)
             {
                 settings.capacities = new Dictionary<string, int>();
@@ -200,6 +261,54 @@ namespace InfraSpaceMultiResourceLogistics
                 CollectionProductionLogic.minStorageLimit,
                 CollectionProductionLogic.GetMaxStorage());
             consumerProducer.ResetConsumablesProducables();
+        }
+
+        private static bool IsStorageOnly(ConsumerProducer consumerProducer, Resource resource)
+        {
+            if (resource == null || consumerProducer?.building == null)
+            {
+                return false;
+            }
+
+            MultiResourceLogisticsMod mod = MultiResourceLogisticsMod.Instance;
+            return mod != null &&
+                   mod.centers.TryGetValue(consumerProducer.building.GetID(), out CenterSettings settings) &&
+                   settings?.storageOnly != null &&
+                   settings.storageOnly.Contains(resource.name);
+        }
+
+        private static bool SetStorageOnly(ConsumerProducer consumerProducer, Resource resource, bool storageOnly)
+        {
+            if (resource == null || consumerProducer?.building == null)
+            {
+                return false;
+            }
+
+            MultiResourceLogisticsMod mod = MultiResourceLogisticsMod.Instance;
+            if (mod == null ||
+                !mod.centers.TryGetValue(consumerProducer.building.GetID(), out CenterSettings settings) ||
+                settings?.resourceNames == null ||
+                !settings.resourceNames.Contains(resource.name))
+            {
+                return false;
+            }
+
+            if (settings.storageOnly == null)
+            {
+                settings.storageOnly = new List<string>();
+            }
+
+            bool listed = settings.storageOnly.Contains(resource.name);
+            if (storageOnly && !listed)
+            {
+                settings.storageOnly.Add(resource.name);
+            }
+            else if (!storageOnly && listed)
+            {
+                settings.storageOnly.Remove(resource.name);
+            }
+
+            return true;
         }
     }
 }
