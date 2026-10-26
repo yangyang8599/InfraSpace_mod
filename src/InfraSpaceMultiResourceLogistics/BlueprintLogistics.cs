@@ -73,4 +73,13 @@ namespace InfraSpaceMultiResourceLogistics
             Debug.LogWarning(message);
         }
     }
+
+    [HarmonyPatch(typeof(Building), nameof(Building.Destroy))]
+    internal static class DestroyedCenterCleanupPatch
+    {
+        private static void Postfix(Building __instance)
+        {
+            MultiResourceLogisticsMod.Instance?.centers?.Remove(__instance.GetID());
+        }
+    }
 }
