@@ -71,7 +71,7 @@ namespace InfraSpaceConstructionTools
                     continue;
                 }
 
-                piece.Source.representation.SetVisible(visible);
+                piece.Source.representation.gameObject.SetActive(visible);
             }
         }
 
@@ -130,7 +130,6 @@ namespace InfraSpaceConstructionTools
 
         internal static void Commit(IReadOnlyList<RoadPiece> pieces, Vector3 delta)
         {
-            PrepareSources(pieces);
             HashSet<NetNode> moving = new HashSet<NetNode>();
             List<NetEdge> reshape = new List<NetEdge>();
             foreach (RoadPiece piece in pieces)
@@ -182,7 +181,6 @@ namespace InfraSpaceConstructionTools
             HashSet<Road> affectedRoads = new HashSet<Road>();
             foreach (NetEdge edge in affectedEdges)
             {
-                edge.SetIsBuilt(isBuilt: true, firstTime: false);
                 RefreshEdge(edge);
                 if (edge.road != null)
                 {
@@ -196,24 +194,55 @@ namespace InfraSpaceConstructionTools
             }
         }
 
-        private static void PrepareSources(IReadOnlyList<RoadPiece> pieces)
+        internal static void DeleteSelection(IReadOnlyList<RoadPiece> pieces)
         {
-            HashSet<NetEdge> prepared = new HashSet<NetEdge>();
             foreach (RoadPiece piece in pieces)
             {
-                NetEdge edge = piece?.Source;
-                if (edge == null || !edge.IsValid() || !prepared.Add(edge))
+                NetEdge source = piece?.Source;
+                if (source == null || !source.IsValid())
                 {
                     continue;
                 }
 
-                edge.road?.RemoveSideRoads();
-                edge.SetIsBuilt(isBuilt: false, firstTime: false);
-                if (edge.AffectsTerrain())
+                if (piece.Entire)
                 {
-                    WorldScripts.Inst.roadDecalManager.UpdateArea(edge, batch: true);
+                    source.Destroy();
+                    continue;
+                }
+
+                if (piece.StartInside)
+                {
+                    DestroyEnd(source, piece.Bezier.d, source.startNode.GetPosition());
+                }
+                else if (piece.EndInside)
+                {
+                    DestroyEnd(source, piece.Bezier.a, source.endNode.GetPosition());
+                }
+                else
+                {
+                    DestroyMiddle(piece);
                 }
             }
+        }
+
+        private static void DestroyEnd(NetEdge source, Vector3 cut, Vector3 insidePoint)
+        {
+            NetNode middle = source.Split(cut);
+            ClosestHalf(middle, insidePoint)?.Destroy();
+        }
+
+        private static void DestroyMiddle(RoadPiece piece)
+        {
+            Vector3 endPosition = piece.Source.endNode.GetPosition();
+            NetNode firstCut = piece.Source.Split(piece.Bezier.a);
+            NetEdge far = ClosestHalf(firstCut, endPosition);
+            if (far == null || !far.IsValid())
+            {
+                return;
+            }
+
+            NetNode secondCut = far.Split(piece.Bezier.d);
+            EdgeBetween(firstCut, secondCut)?.Destroy();
         }
 
         private static HashSet<NetEdge> CollectEdges(HashSet<NetNode> moving, List<NetEdge> reshape)
@@ -360,7 +389,6 @@ namespace InfraSpaceConstructionTools
             {
                 if (edge != null && edge.IsValid())
                 {
-                    edge.SetIsBuilt(isBuilt: true, firstTime: false);
                     RefreshEdge(edge);
                 }
             }

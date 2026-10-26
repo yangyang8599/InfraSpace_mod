@@ -56,6 +56,8 @@ namespace InfraSpaceConstructionTools
         private readonly bool canCommit;
         private readonly bool copyConfiguration;
         private readonly bool includePowerLines;
+        private bool configurationCopied;
+        private bool powerLinesCreated;
         private int quarterTurns;
         private bool finished;
 
@@ -88,7 +90,7 @@ namespace InfraSpaceConstructionTools
             CreateBuildingGhosts(sourceBuildings);
             if (includePowerLines)
             {
-                CreatePowerLines();
+                EnsurePowerLines();
             }
             CreateRoadGhosts(roads);
             pivot = ComputePivot();
@@ -231,8 +233,11 @@ namespace InfraSpaceConstructionTools
                 return BatchCommitResult.Invalid;
             }
 
-            List<ResourceCost> costs = GetTotalCosts();
-            if (!ValidatePreview() || !BatchPlacement.CanPay(costs))
+            List<ResourceCost> costs = checkBuildCosts
+                ? GetTotalCosts()
+                : new List<ResourceCost>();
+            if (!ValidatePreview() ||
+                (checkBuildCosts && !BatchPlacement.CanPay(costs)))
             {
                 IsPreviewValid = false;
                 return BatchCommitResult.Invalid;
@@ -268,7 +273,10 @@ namespace InfraSpaceConstructionTools
 
                 RefreshPowerLines();
 
-                BatchPlacement.Pay(costs);
+                if (checkBuildCosts)
+                {
+                    BatchPlacement.Pay(costs);
+                }
                 WorldScripts.Inst.powerManager.SetNetworksDirty();
                 PathFinder.SetRoadNetworkDirty();
                 finished = true;
@@ -354,10 +362,32 @@ namespace InfraSpaceConstructionTools
                     group.Add(ghost);
                 }
             }
+
+            configurationCopied = copyConfiguration;
         }
 
-        private void CreatePowerLines()
+        internal void PrepareConfiguration()
         {
+            if (configurationCopied)
+            {
+                return;
+            }
+
+            foreach (BuildingCopy copy in buildings)
+            {
+                CopyBuildingConfiguration(copy.Source, copy.Ghost);
+            }
+
+            configurationCopied = true;
+        }
+
+        internal void EnsurePowerLines()
+        {
+            if (powerLinesCreated)
+            {
+                return;
+            }
+
             Dictionary<Building, Building> ghosts = new Dictionary<Building, Building>();
             foreach (BuildingCopy copy in buildings)
             {
@@ -387,6 +417,35 @@ namespace InfraSpaceConstructionTools
                         BuildingConnectorFactory.CreateBuildingConnector("powerLine", copy.Ghost, otherGhost));
                 }
             }
+
+            powerLinesCreated = true;
+        }
+
+        internal void TransferRuntimeState()
+        {
+            foreach (BuildingCopy copy in buildings)
+            {
+                ConsumerProducer source = copy.Source.consumerProducer;
+                ConsumerProducer target = copy.Ghost.consumerProducer;
+                if (source == null || target == null)
+                {
+                    continue;
+                }
+
+                CopyStorage(source.incomingStorage, target.incomingStorage);
+                CopyStorage(source.outgoingStorage, target.outgoingStorage);
+                source.ReplaceIncomingCars(target);
+            }
+        }
+
+        private static void CopyStorage(int[] source, int[] target)
+        {
+            if (source == null || target == null)
+            {
+                return;
+            }
+
+            Array.Copy(source, target, Math.Min(source.Length, target.Length));
         }
 
         private void RefreshPowerLines()
