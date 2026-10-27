@@ -19,6 +19,9 @@ namespace InfraSpaceMultiResourceLogistics
 
         private static readonly Dictionary<long, int> nextDistributionIndex = new Dictionary<long, int>();
 
+        [ThreadStatic]
+        private static List<Resource> shippableResources;
+
         private static readonly Dictionary<long, List<ConsumerProducer>> pendingConsumers =
             new Dictionary<long, List<ConsumerProducer>>();
 
@@ -34,7 +37,17 @@ namespace InfraSpaceMultiResourceLogistics
 
         private static int distributionQueriesArmedFrame = -1;
 
-        private static readonly Dictionary<CenterLink, bool> roadBlocked = new Dictionary<CenterLink, bool>();
+        // 路网重建前，同一对建筑的可达性不变。值里的 PathFrame 对上 PathFinder 的代数才有效。
+        private struct RoadCacheEntry
+        {
+            public long PathFrame;
+            public bool Reachable;
+        }
+
+        private static long roadCacheFrame = long.MinValue;
+
+        private static readonly Dictionary<CenterLink, RoadCacheEntry> roadCache =
+            new Dictionary<CenterLink, RoadCacheEntry>();
 
         internal static void UpdateCollection(CollectionProductionLogic center)
         {
@@ -44,12 +57,7 @@ namespace InfraSpaceMultiResourceLogistics
             }
 
             EnsureConsumables(center.consumerProducer, CenterState.GetResources(center));
-            RefreshCollectionRoadLinks(center);
-            int departures = ForwardToDistributionCenters(center, MaxDeparturesPerUpdate);
-            if (departures < MaxDeparturesPerUpdate)
-            {
-                PullFromProducers(center, MaxDeparturesPerUpdate - departures);
-            }
+            ForwardToDistributionCenters(center, MaxDeparturesPerUpdate);
         }
 
         internal static void UpdateDistribution(DistributionProductionLogic center)
@@ -109,11 +117,15 @@ namespace InfraSpaceMultiResourceLogistics
                     producer.outgoingStorage[index] -= moved;
                 }
                 else if (!laneBlocked &&
-                         StorageHasOrder(producer, index, resource, out int orderAmount) &&
-                         !ReserveForCollection(producer, resource, orderAmount) &&
-                         TryDeliverSurplus(producer, index, resource, orderAmount))
+                         StorageHasOrder(producer, index, resource, out int orderAmount))
                 {
-                    break;
+                    PushResult pushed = TryPushToCollection(producer, index, resource, orderAmount);
+                    if (pushed == PushResult.Held ||
+                        (pushed == PushResult.None &&
+                         TryDeliverSurplus(producer, index, resource, orderAmount)))
+                    {
+                        break;
+                    }
                 }
 
                 index++;
@@ -130,8 +142,16 @@ namespace InfraSpaceMultiResourceLogistics
             return orderAmount > 0 && producer.outgoingStorage[index] >= orderAmount;
         }
 
-        private static bool ReserveForCollection(
+        private enum PushResult
+        {
+            None,
+            Sent,
+            Held,
+        }
+
+        private static PushResult TryPushToCollection(
             ConsumerProducer producer,
+            int storageIndex,
             Resource resource,
             int orderAmount)
         {
@@ -141,18 +161,56 @@ namespace InfraSpaceMultiResourceLogistics
                 centers == null ||
                 centers.Count == 0)
             {
-                return false;
+                return PushResult.None;
             }
 
-            for (int i = 0; i < centers.Count; i++)
+            int count = centers.Count;
+            int start = (int)((Old.GetSimulator().simulationFrame + producer.building.GetID()) % count);
+            for (int offset = 0; offset < count; offset++)
             {
-                if (CenterCanAccept(centers[i], resource, orderAmount))
+                CollectionProductionLogic center = centers[(start + offset) % count];
+                Building destination = center?.consumerProducer?.building;
+                if (destination == null ||
+                    !destination.IsValidAndBuilt() ||
+                    !CenterState.Moves(center, resource) ||
+                    RoadKnownUnreachable(producer.building, destination))
                 {
-                    return true;
+                    continue;
                 }
+
+                CarDispatch result;
+                lock (center.consumerProducer)
+                {
+                    if (!CenterCanAccept(center, resource, orderAmount))
+                    {
+                        continue;
+                    }
+
+                    result = DispatchCar(producer.building, destination, resource, orderAmount);
+                }
+
+                if (result == CarDispatch.NoPath)
+                {
+                    continue;
+                }
+
+                if (result != CarDispatch.Sent)
+                {
+                    return PushResult.Held;
+                }
+
+                lock (producer)
+                {
+                    if (producer.outgoingStorage[storageIndex] >= orderAmount)
+                    {
+                        producer.outgoingStorage[storageIndex] -= orderAmount;
+                    }
+                }
+
+                return PushResult.Sent;
             }
 
-            return false;
+            return PushResult.None;
         }
 
         private static bool CenterCanAccept(
@@ -589,28 +647,6 @@ namespace InfraSpaceMultiResourceLogistics
             }
         }
 
-        internal static void RefreshDistributionRoadLinks(DistributionProductionLogic center)
-        {
-            Building destination = center?.consumerProducer?.building;
-            if (destination == null || !destination.IsValidAndBuilt())
-            {
-                return;
-            }
-
-            foreach (Reference<Building> reference in center.connectedCollectionCenters.ToArray())
-            {
-                Building source = reference.Get();
-                CollectionProductionLogic collection =
-                    source?.consumerProducer?.productionLogic as CollectionProductionLogic;
-                if (collection == null || !CenterState.ShareResource(collection, center))
-                {
-                    continue;
-                }
-
-                SetRoadBlocked(source.GetID(), destination.GetID(), !HasRoadPath(source, destination));
-            }
-        }
-
         internal static bool IsResourceRoadBlocked(CollectionProductionLogic center, Resource resource)
         {
             Building source = center?.consumerProducer?.building;
@@ -626,7 +662,7 @@ namespace InfraSpaceMultiResourceLogistics
                     destination?.consumerProducer?.productionLogic as DistributionProductionLogic;
                 if (distribution != null &&
                     CenterState.Moves(distribution, resource) &&
-                    IsRoadBlocked(source.GetID(), destination.GetID()))
+                    IsPairBlocked(source, destination))
                 {
                     return true;
                 }
@@ -650,7 +686,7 @@ namespace InfraSpaceMultiResourceLogistics
                     source?.consumerProducer?.productionLogic as CollectionProductionLogic;
                 if (collection != null &&
                     CenterState.Moves(collection, resource) &&
-                    IsRoadBlocked(source.GetID(), destination.GetID()))
+                    IsPairBlocked(source, destination))
                 {
                     return true;
                 }
@@ -661,6 +697,12 @@ namespace InfraSpaceMultiResourceLogistics
 
         private static int ForwardToDistributionCenters(CollectionProductionLogic center, int limit)
         {
+            List<Resource> shippable = ShippableResources(center);
+            if (shippable.Count == 0)
+            {
+                return 0;
+            }
+
             Reference<Building>[] links = center.connectedDistributionCenters.ToArray();
             if (links.Length == 0)
             {
@@ -678,44 +720,92 @@ namespace InfraSpaceMultiResourceLogistics
             }
 
             int departures = 0;
-            int idle = 0;
-            while (departures < limit && idle < links.Length)
+            int attempts = 0;
+            int maxAttempts = Math.Max(links.Length, limit);
+            int lastSuccess = -1;
+            while (departures < limit && attempts < maxAttempts)
             {
+                attempts++;
                 index = (index + 1) % links.Length;
-                if (TrySendToDistribution(center, links[index].Get()))
+                if (TrySendToDistribution(center, links[index].Get(), shippable))
                 {
                     departures++;
-                    idle = 0;
-                    lock (CursorGate)
-                    {
-                        nextDistributionIndex[buildingId] = index;
-                    }
+                    lastSuccess = index;
                 }
-                else
+            }
+
+            if (lastSuccess >= 0)
+            {
+                lock (CursorGate)
                 {
-                    idle++;
+                    nextDistributionIndex[buildingId] = lastSuccess;
                 }
             }
 
             return departures;
         }
 
-        private static bool TrySendToDistribution(CollectionProductionLogic center, Building building)
+        private static bool SharesShippableResource(
+            DistributionProductionLogic distribution,
+            List<Resource> shippable)
+        {
+            for (int i = 0; i < shippable.Count; i++)
+            {
+                if (CenterState.Moves(distribution, shippable[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static List<Resource> ShippableResources(CollectionProductionLogic center)
+        {
+            if (shippableResources == null)
+            {
+                shippableResources = new List<Resource>();
+            }
+
+            shippableResources.Clear();
+            foreach (Resource resource in CenterState.GetResources(center))
+            {
+                int orderAmount = ConsumerProducer.GetOrderAmount(resource);
+                if (CenterState.Moves(center, resource) &&
+                    orderAmount > 0 &&
+                    GetStorage(center.consumerProducer, resource) >= orderAmount)
+                {
+                    shippableResources.Add(resource);
+                }
+            }
+
+            return shippableResources;
+        }
+
+        private static bool TrySendToDistribution(
+            CollectionProductionLogic center,
+            Building building,
+            List<Resource> shippable)
         {
             DistributionProductionLogic distribution =
                 building?.consumerProducer?.productionLogic as DistributionProductionLogic;
-            if (distribution == null || !CenterState.ShareResource(center, distribution))
+            if (distribution == null)
             {
                 return false;
             }
 
-            if (IsRoadBlocked(center.consumerProducer.building.GetID(), building.GetID()))
+            if (RoadKnownUnreachable(center.consumerProducer.building, building))
+            {
+                return false;
+            }
+
+            if (!SharesShippableResource(distribution, shippable))
             {
                 return false;
             }
 
             EnsureConsumables(distribution.consumerProducer, CenterState.GetResources(distribution));
-            Resource resource = SelectResourceToSend(center, distribution);
+            Resource resource = SelectResourceToSend(center, distribution, shippable);
             if (resource == null)
             {
                 return false;
@@ -733,35 +823,35 @@ namespace InfraSpaceMultiResourceLogistics
 
         private static Resource SelectResourceToSend(
             CollectionProductionLogic center,
-            DistributionProductionLogic distribution)
+            DistributionProductionLogic distribution,
+            List<Resource> shippable)
         {
             Resource selected = null;
             float bestFill = float.MaxValue;
-            foreach (Resource resource in CenterState.GetResources(center))
+            for (int i = 0; i < shippable.Count; i++)
             {
-                if (CenterState.IsStorageOnly(center, resource) ||
-                    CenterState.IsStorageOnly(distribution, resource) ||
-                    !CenterState.Contains(distribution, resource) ||
-                    IndexOf(distribution.consumerProducer.incomingResources, resource) < 0)
+                Resource resource = shippable[i];
+                if (!CenterState.Moves(distribution, resource))
                 {
                     continue;
                 }
 
                 int orderAmount = ConsumerProducer.GetOrderAmount(resource);
                 if (orderAmount <= 0 ||
-                    GetStorage(center.consumerProducer, resource) < orderAmount)
+                    GetStorage(center.consumerProducer, resource) < orderAmount ||
+                    IndexOf(distribution.consumerProducer.incomingResources, resource) < 0)
                 {
                     continue;
                 }
 
                 int capacity = CenterState.GetCapacity(distribution, resource);
-                if (!HasCapacity(distribution.consumerProducer, resource, capacity, orderAmount))
+                int stored = GetStorage(distribution.consumerProducer, resource);
+                int incoming = distribution.consumerProducer.GetIncomingCarsResourceAmount(resource);
+                if (capacity - stored - incoming < orderAmount)
                 {
                     continue;
                 }
 
-                int stored = GetStorage(distribution.consumerProducer, resource);
-                int incoming = distribution.consumerProducer.GetIncomingCarsResourceAmount(resource);
                 float fill = capacity <= 0 ? 1f : (float)(stored + incoming) / capacity;
                 if (fill < bestFill)
                 {
@@ -773,83 +863,109 @@ namespace InfraSpaceMultiResourceLogistics
             return selected;
         }
 
-        private static void RefreshCollectionRoadLinks(CollectionProductionLogic center)
+        private static bool RoadKnownUnreachable(Building source, Building destination)
         {
-            Building source = center.consumerProducer.building;
-            List<CenterLink> stale = new List<CenterLink>();
-            lock (RoadGate)
-            {
-                foreach (CenterLink link in roadBlocked.Keys)
-                {
-                    if (link.SourceId == source.GetID())
-                    {
-                        stale.Add(link);
-                    }
-                }
-
-                foreach (CenterLink link in stale)
-                {
-                    roadBlocked.Remove(link);
-                }
-            }
-
-            foreach (Reference<Building> reference in center.connectedDistributionCenters.ToArray())
-            {
-                Building destination = reference.Get();
-                DistributionProductionLogic distribution =
-                    destination?.consumerProducer?.productionLogic as DistributionProductionLogic;
-                if (distribution == null || !CenterState.ShareResource(center, distribution))
-                {
-                    continue;
-                }
-
-                SetRoadBlocked(source.GetID(), destination.GetID(), !HasRoadPath(source, destination));
-            }
-        }
-
-        private static void SetRoadBlocked(long sourceId, long destinationId, bool blocked)
-        {
-            lock (RoadGate)
-            {
-                roadBlocked[new CenterLink(sourceId, destinationId)] = blocked;
-            }
-        }
-
-        private static bool IsRoadBlocked(long sourceId, long destinationId)
-        {
-            lock (RoadGate)
-            {
-                return roadBlocked.TryGetValue(new CenterLink(sourceId, destinationId), out bool blocked) &&
-                       blocked;
-            }
-        }
-
-        private static bool HasRoadPath(Building source, Building destination)
-        {
-            if (source == null || destination == null || !source.IsValid() || !destination.IsValid())
+            if (source == null || destination == null)
             {
                 return false;
             }
 
-            if (QueryTruckPath(source, destination))
+            return TryReadRoad(
+                       new CenterLink(source.GetID(), destination.GetID()),
+                       PathFinder.GetLastUpdateFrame(),
+                       out bool reachable) &&
+                   !reachable;
+        }
+
+        private static bool IsPairBlocked(Building source, Building destination)
+        {
+            if (source == null || destination == null || !source.IsValid() || !destination.IsValid())
             {
                 return true;
             }
 
-            source.UpdateSideRoad(false, false);
-            destination.UpdateSideRoad(false, false);
+            long frame = PathFinder.GetLastUpdateFrame();
+            CenterLink link = new CenterLink(source.GetID(), destination.GetID());
+            if (TryReadRoad(link, frame, out bool reachable))
+            {
+                return !reachable;
+            }
+
+            return FindTruckPath(source, destination) == null;
+        }
+
+        private static List<PathPart> FindTruckPath(Building source, Building destination)
+        {
+            if (source == null || destination == null || !source.IsValid() || !destination.IsValid())
+            {
+                return null;
+            }
+
+            long frame = PathFinder.GetLastUpdateFrame();
+            CenterLink link = new CenterLink(source.GetID(), destination.GetID());
+            if (TryReadRoad(link, frame, out bool reachable))
+            {
+                if (!reachable)
+                {
+                    return null;
+                }
+            }
+            else
+            {
+                List<PathPart> probed = QueryTruckPath(source, destination);
+                RememberRoad(link, frame, probed != null);
+                return probed;
+            }
+
             return QueryTruckPath(source, destination);
         }
 
-        private static bool QueryTruckPath(Building source, Building destination)
+        private static bool TryReadRoad(CenterLink link, long frame, out bool reachable)
+        {
+            lock (RoadGate)
+            {
+                ExpireRoadCache(frame);
+                if (roadCache.TryGetValue(link, out RoadCacheEntry entry) && entry.PathFrame == frame)
+                {
+                    reachable = entry.Reachable;
+                    return true;
+                }
+            }
+
+            reachable = false;
+            return false;
+        }
+
+        private static void RememberRoad(CenterLink link, long frame, bool reachable)
+        {
+            lock (RoadGate)
+            {
+                ExpireRoadCache(frame);
+                roadCache[link] = new RoadCacheEntry { PathFrame = frame, Reachable = reachable };
+            }
+        }
+
+        private static void ExpireRoadCache(long frame)
+        {
+            if (roadCacheFrame == frame)
+            {
+                return;
+            }
+
+            roadCache.Clear();
+            roadCacheFrame = frame;
+        }
+
+        private static List<PathPart> QueryTruckPath(Building source, Building destination)
         {
             try
             {
-                return PathFinderFacadeRoads.GetPath(source, destination) != null;
+                List<PathPart> path = PathFinderFacadeRoads.GetPath(source, destination);
+                return path != null && path.Count > 0 ? path : null;
             }
             catch (Exception)
             {
-                return false;
+                return null;
             }
         }
 
@@ -913,50 +1029,6 @@ namespace InfraSpaceMultiResourceLogistics
             }
         }
 
-        private static void PullFromProducers(CollectionProductionLogic center, int limit)
-        {
-            int departures = 0;
-            foreach (Resource resource in CenterState.GetResources(center))
-            {
-                if (CenterState.IsStorageOnly(center, resource))
-                {
-                    continue;
-                }
-
-                int orderAmount = ConsumerProducer.GetOrderAmount(resource);
-                foreach (ConsumerProducer producer in center.connectedProducers.ToArray())
-                {
-                    if (!CenterCanAccept(center, resource, orderAmount))
-                    {
-                        break;
-                    }
-
-                    int resourceIndex = IndexOf(producer.outgoingResources, resource);
-                    if (resourceIndex < 0)
-                    {
-                        continue;
-                    }
-
-                    lock (producer)
-                    {
-                        if (producer.outgoingStorage[resourceIndex] < orderAmount ||
-                            !TryStartCar(producer.building, center.consumerProducer.building, resource, orderAmount))
-                        {
-                            continue;
-                        }
-
-                        producer.outgoingStorage[resourceIndex] -= orderAmount;
-                    }
-
-                    departures++;
-                    if (departures >= limit)
-                    {
-                        return;
-                    }
-                }
-            }
-        }
-
         private static bool CanReceiveTruck(ConsumerProducer consumer, int available, int truckAmount)
         {
             if (available <= 0)
@@ -1009,7 +1081,7 @@ namespace InfraSpaceMultiResourceLogistics
                 return CarDispatch.NoPath;
             }
 
-            List<PathPart> path = PathFinderFacadeRoads.GetPath(source, destination);
+            List<PathPart> path = FindTruckPath(source, destination);
             if (path == null)
             {
                 return CarDispatch.NoPath;
@@ -1426,15 +1498,7 @@ namespace InfraSpaceMultiResourceLogistics
                 return false;
             }
 
-            try
-            {
-                List<PathPart> path = PathFinderFacadeRoads.GetPath(source, destination);
-                return path != null && path.Count > 0;
-            }
-            catch (Exception)
-            {
-                return false;
-            }
+            return !IsPairBlocked(source, destination);
         }
 
         private static bool IsInRange(Vector2 origin, Building building, float radius)

@@ -54,11 +54,6 @@ namespace InfraSpaceMultiResourceLogistics
             MultiResourceLogisticsEngine.UpdateDistribution(__instance);
             return false;
         }
-
-        private static void Postfix(DistributionProductionLogic __instance)
-        {
-            MultiResourceLogisticsEngine.RefreshDistributionRoadLinks(__instance);
-        }
     }
 
     [HarmonyPatch(
@@ -66,7 +61,7 @@ namespace InfraSpaceMultiResourceLogistics
         nameof(CollectionProductionLogic.TryStartDeliveryToCollectionCenter))]
     internal static class CollectionPassiveDeliveryPatch
     {
-        // 搜集中心一律自己拉取。返回 false，避免和生产建筑的原版推送各发一车。
+        // 出货已由生产建筑推进搜集中心。返回 false，避免原版再发一车。
         private static bool Prefix(ref bool __result)
         {
             __result = false;

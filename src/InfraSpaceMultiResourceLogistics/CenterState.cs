@@ -39,12 +39,14 @@ namespace InfraSpaceMultiResourceLogistics
 
         internal static bool Moves(CollectionProductionLogic center, Resource resource)
         {
-            return Contains(center, resource) && !IsStorageOnly(center, resource);
+            return Listed(center?.consumerProducer, resource, center?.resource) &&
+                   !IsStorageOnly(center, resource);
         }
 
         internal static bool Moves(DistributionProductionLogic center, Resource resource)
         {
-            return Contains(center, resource) && !IsStorageOnly(center, resource);
+            return Listed(center?.consumerProducer, resource, center?.resource) &&
+                   !IsStorageOnly(center, resource);
         }
 
         internal static void SetStorageOnly(CollectionProductionLogic center, Resource resource, bool storageOnly)
@@ -182,6 +184,24 @@ namespace InfraSpaceMultiResourceLogistics
             }
 
             return false;
+        }
+
+        private static bool Listed(ConsumerProducer consumerProducer, Resource resource, Resource fallback)
+        {
+            if (resource == null)
+            {
+                return false;
+            }
+
+            MultiResourceLogisticsMod mod = MultiResourceLogisticsMod.Instance;
+            if (mod == null || consumerProducer?.building == null ||
+                !mod.centers.TryGetValue(consumerProducer.building.GetID(), out CenterSettings settings) ||
+                settings.resourceNames == null || settings.resourceNames.Count == 0)
+            {
+                return resource == fallback;
+            }
+
+            return settings.resourceNames.Contains(resource.name);
         }
 
         private static IReadOnlyList<Resource> GetResources(ConsumerProducer consumerProducer, Resource fallback)
