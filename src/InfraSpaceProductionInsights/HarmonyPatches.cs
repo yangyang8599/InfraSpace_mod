@@ -125,6 +125,7 @@ namespace InfraSpaceProductionInsights
         private static void Postfix()
         {
             PowerGridColors.HideUnifiedRange();
+            ProducerFocus.RestoreProducers();
         }
     }
 
@@ -144,6 +145,7 @@ namespace InfraSpaceProductionInsights
         private static void Postfix(ref VisualType __result)
         {
             ProducerList.OverrideVisualType(ref __result);
+            ProducerFocus.OverrideVisualType(ref __result);
         }
     }
 
@@ -153,6 +155,7 @@ namespace InfraSpaceProductionInsights
         private static void Postfix(Building building, VisualType visualType, ref Material __result)
         {
             ProducerList.ApplyHighlight(building, visualType, ref __result);
+            ProducerFocus.NotePainted();
         }
     }
 }

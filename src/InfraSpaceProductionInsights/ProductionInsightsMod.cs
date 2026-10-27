@@ -30,6 +30,7 @@ namespace InfraSpaceProductionInsights
         {
             PowerGridColors.RequestRefreshIfNeeded();
             ProducerList.Tick();
+            ProducerFocus.Tick();
         }
 
         public override void SimulationUdpate()

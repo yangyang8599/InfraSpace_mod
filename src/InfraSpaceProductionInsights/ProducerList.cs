@@ -90,6 +90,12 @@ namespace InfraSpaceProductionInsights
         internal static void OnVisualizationButton()
         {
             ClearSelection();
+            ProducerFocus.Clear();
+        }
+
+        internal static void Dismiss()
+        {
+            ClearSelection();
         }
 
         internal static void ApplyHighlight(Building building, VisualType visualType, ref Material material)
@@ -134,6 +140,7 @@ namespace InfraSpaceProductionInsights
                 return;
             }
 
+            ProducerFocus.Clear();
             selected = selected == resource ? null : resource;
             PaintSelection();
             WorldScripts.Inst?.visualizationManager?.MarkDirty();
