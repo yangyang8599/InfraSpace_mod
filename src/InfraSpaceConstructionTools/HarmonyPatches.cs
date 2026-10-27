@@ -97,7 +97,18 @@ namespace InfraSpaceConstructionTools
     [HarmonyPatch(typeof(BuildingConstructionManager), nameof(BuildingConstructionManager.DisplayEfficiencyLinesForBuilding))]
     internal static class ShowDependentEfficiencyLinesPatch
     {
-        // 不跳过原版。原版黄线是提高这座建筑产率的邻居，这里补上它提高产率的建筑。
+        // 移动和放置仍走原版。普通点选不画线；按住约半秒后才补上靠它提高产率的建筑。
+        private static bool Prefix(BuildingConstructionManager __instance, Building building)
+        {
+            if (EfficiencyDependents.ShouldShow(__instance, building))
+            {
+                return true;
+            }
+
+            EfficiencyDependents.HideAll(__instance);
+            return false;
+        }
+
         private static void Postfix(Building building)
         {
             EfficiencyDependents.Show(building);
@@ -107,7 +118,7 @@ namespace InfraSpaceConstructionTools
     [HarmonyPatch(typeof(BuildingConstructionManager), "CustomUpdate")]
     internal static class PreviewEfficiencyLinesWhileHeldPatch
     {
-        // 不跳过原版。移动和放置时的连线保持原样；松开鼠标后也不改原版选中连线。
+        // 不跳过原版。移动和放置时的连线保持原样。
         private static void Postfix(BuildingConstructionManager __instance)
         {
             EfficiencyDependents.PreviewHold(__instance);

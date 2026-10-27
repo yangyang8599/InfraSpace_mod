@@ -7,14 +7,17 @@ namespace InfraSpaceConstructionTools
 {
     internal static class EfficiencyDependents
     {
+        private const float HoldSeconds = 0.45f;
+
         private static readonly Color Blue = new Color(0.3f, 0.62f, 1f, 1f);
         private static readonly List<EfficiencyLineVisual> Lines = new List<EfficiencyLineVisual>();
 
+        private static Building holdBuilding;
+        private static float holdStart;
+        private static bool holdReady;
+
         private static readonly AccessTools.FieldRef<BuildingConstructionManager, Building> HoveredOf =
             AccessTools.FieldRefAccess<BuildingConstructionManager, Building>("hoveredBuilding");
-
-        private static readonly AccessTools.FieldRef<BuildingConstructionManager, Building> CurrentOf =
-            AccessTools.FieldRefAccess<BuildingConstructionManager, Building>("currentBuilding");
 
         private static readonly AccessTools.FieldRef<BuildingConstructionManager, bool> MovingOf =
             AccessTools.FieldRefAccess<BuildingConstructionManager, bool>("isMoving");
@@ -25,36 +28,105 @@ namespace InfraSpaceConstructionTools
         private static readonly AccessTools.FieldRef<BuildingConstructionManager, bool> DestroyingOf =
             AccessTools.FieldRefAccess<BuildingConstructionManager, bool>("isDestroying");
 
+        internal static bool ShouldShow(BuildingConstructionManager manager, Building building)
+        {
+            if (manager == null)
+            {
+                return false;
+            }
+
+            if (MovingOf(manager) || BuildingOf(manager))
+            {
+                return true;
+            }
+
+            return holdReady &&
+                   building != null &&
+                   building == holdBuilding &&
+                   Input.GetButton("Fire1");
+        }
+
         internal static void PreviewHold(BuildingConstructionManager manager)
         {
-            if (manager == null || !Input.GetButton("Fire1"))
+            if (manager == null)
             {
                 return;
             }
 
-            if (WorldScripts.Inst?.canvasHandler != null && WorldScripts.Inst.canvasHandler.IsMouseOverUI())
+            if (MovingOf(manager) || BuildingOf(manager))
             {
-                return;
-            }
-
-            Building current = CurrentOf(manager);
-            if (current != null && (MovingOf(manager) || BuildingOf(manager)))
-            {
-                return;
-            }
-
-            if (DestroyingOf(manager))
-            {
+                ResetHold();
                 return;
             }
 
             Building hovered = HoveredOf(manager);
-            if (hovered == null || !hovered.IsValidAndBuilt())
+            bool overUi = WorldScripts.Inst?.canvasHandler != null &&
+                          WorldScripts.Inst.canvasHandler.IsMouseOverUI();
+            if (DestroyingOf(manager) || overUi || !Input.GetButton("Fire1") ||
+                hovered == null || !hovered.IsValidAndBuilt())
+            {
+                bool wasHolding = holdBuilding != null || holdReady;
+                ResetHold();
+                if (wasHolding)
+                {
+                    HideAll(manager);
+                }
+
+                return;
+            }
+
+            if (holdBuilding != hovered)
+            {
+                bool wasReady = holdReady;
+                holdBuilding = hovered;
+                holdStart = Time.unscaledTime;
+                holdReady = false;
+                if (wasReady)
+                {
+                    HideAll(manager);
+                }
+            }
+
+            if (!holdReady && Time.unscaledTime - holdStart >= HoldSeconds)
+            {
+                holdReady = true;
+            }
+
+            if (holdReady)
+            {
+                manager.DisplayEfficiencyLinesForBuilding(hovered);
+            }
+        }
+
+        internal static void HideAll(BuildingConstructionManager manager)
+        {
+            for (int i = 0; i < Lines.Count; i++)
+            {
+                if (Lines[i] != null)
+                {
+                    Lines[i].gameObject.SetActive(false);
+                }
+            }
+
+            List<EfficiencyLineVisual> vanilla = manager?.efficiencyLines;
+            if (vanilla == null)
             {
                 return;
             }
 
-            manager.DisplayEfficiencyLinesForBuilding(hovered);
+            for (int i = 0; i < vanilla.Count; i++)
+            {
+                if (vanilla[i] != null)
+                {
+                    vanilla[i].gameObject.SetActive(false);
+                }
+            }
+        }
+
+        private static void ResetHold()
+        {
+            holdBuilding = null;
+            holdReady = false;
         }
 
         internal static void Show(Building building)

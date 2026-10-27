@@ -27,6 +27,7 @@ namespace InfraSpaceProductionInsights
             toggle.onValueChanged.RemoveAllListeners();
             toggle.SetIsOnWithoutNotify(false);
             ApplyLabel(clone);
+            ApplyTip(clone);
 
             RectTransform originalRect = original.GetComponent<RectTransform>();
             RectTransform cloneRect = clone.GetComponent<RectTransform>();
@@ -75,6 +76,34 @@ namespace InfraSpaceProductionInsights
             foreach (Text text in root.GetComponentsInChildren<Text>(true))
             {
                 text.text = "最终产物";
+            }
+        }
+
+        private static void ApplyTip(GameObject root)
+        {
+            const string Body =
+                "勾选后，按这个地区的最终消费反推整条生产链的需求。\n" +
+                "消费列改成反推出来的需求。\n" +
+                "列表最下面多出效率行，表示每生产 1 个最终产物占用的工人、电和建筑。\n" +
+                "要先勾选地区，这个开关才能用。";
+
+            TooltipHoverable[] tips = root.GetComponentsInChildren<TooltipHoverable>(true);
+            if (tips == null || tips.Length == 0)
+            {
+                tips = new[] { root.AddComponent<TooltipHoverable>() };
+            }
+
+            for (int i = 0; i < tips.Length; i++)
+            {
+                TooltipHoverable tip = tips[i];
+                if (tip == null)
+                {
+                    continue;
+                }
+
+                tip.titleCode = "";
+                tip.descriptionCode = "";
+                tip.Init("最终产物", Body);
             }
         }
 

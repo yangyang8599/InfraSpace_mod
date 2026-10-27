@@ -593,4 +593,54 @@ namespace InfraSpaceMultiResourceLogistics
             return logic is CollectionProductionLogic || logic is DistributionProductionLogic;
         }
     }
+
+    [HarmonyPatch(typeof(BuildingUpgrade), nameof(BuildingUpgrade.AddConsumablesToList))]
+    internal static class UpgradeMaintenanceRequestPatch
+    {
+        // 原版耐久降到 0.75% 才要 1 个。从那里到加成断开只剩大约 9 秒，车经常来不及。
+        // 剩一成时开始要。到货加上 1 个最多到 110% 上限，多出来的部分不会被裁掉。一次仍然只补 1 个。
+        private const float RequestDurability = 0.1f;
+
+        private static void Postfix(BuildingUpgrade __instance, List<ResourceCost> list)
+        {
+            if (__instance == null || list == null)
+            {
+                return;
+            }
+
+            string resourceName = MaintenanceResourceName(__instance.upgradeType);
+            if (resourceName == null)
+            {
+                return;
+            }
+
+            for (int i = list.Count - 1; i >= 0; i--)
+            {
+                ResourceCost cost = list[i];
+                if (cost.resourceName != resourceName)
+                {
+                    continue;
+                }
+
+                cost.amount = __instance.GetDurability() <= RequestDurability ? 1 : 0;
+                list[i] = cost;
+                return;
+            }
+        }
+
+        private static string MaintenanceResourceName(string upgradeType)
+        {
+            if (upgradeType == BuildingUpgrade.industrialRobots)
+            {
+                return "industrialRobot";
+            }
+
+            if (upgradeType == BuildingUpgrade.highTechTools)
+            {
+                return "highTechTool";
+            }
+
+            return null;
+        }
+    }
 }

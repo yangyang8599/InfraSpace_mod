@@ -24,6 +24,44 @@ namespace InfraSpaceProductionInsights
             return Counts.TryGetValue(resource.name, out int count) ? count : 0;
         }
 
+        internal static bool AnyProduct(Building building, HashSet<string> names)
+        {
+            if (names == null || names.Count == 0)
+            {
+                return false;
+            }
+
+            Collect(building);
+            for (int i = 0; i < Products.Count; i++)
+            {
+                Resource product = Products[i];
+                if (product != null && names.Contains(product.name))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        internal static void AppendMatchingProducts(Building building, HashSet<string> names, List<string> into)
+        {
+            if (into == null || names == null || names.Count == 0)
+            {
+                return;
+            }
+
+            Collect(building);
+            for (int i = 0; i < Products.Count; i++)
+            {
+                Resource product = Products[i];
+                if (product != null && !string.IsNullOrEmpty(product.name) && names.Contains(product.name))
+                {
+                    into.Add(product.name);
+                }
+            }
+        }
+
         internal static bool Produces(Building building, Resource resource)
         {
             if (resource == null || string.IsNullOrEmpty(resource.name))
