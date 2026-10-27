@@ -300,6 +300,19 @@ namespace InfraSpaceMultiResourceLogistics
                    owners.Contains(owner);
         }
 
+        internal static Resource ViewedResource(MonoBehaviour panel, Resource fallback)
+        {
+            NativeCenterPanelController controller = panel == null
+                ? null
+                : panel.GetComponent<NativeCenterPanelController>();
+            if (controller != null && controller.TryGetCoverageResource(out Resource selected, out _))
+            {
+                return selected;
+            }
+
+            return fallback;
+        }
+
         internal static bool TryGet(Building source, Building destination, out bool canReach)
         {
             canReach = false;
@@ -448,7 +461,7 @@ namespace InfraSpaceMultiResourceLogistics
                 storageOnly,
                 RangeReachability.InRegistry(building, viewed, false),
                 true,
-                ___collectionCenter.collectionRadius,
+                CenterState.GetRadius(___collectionCenter, viewed),
                 ref __result);
         }
     }
@@ -485,8 +498,49 @@ namespace InfraSpaceMultiResourceLogistics
                 storageOnly,
                 RangeReachability.InRegistry(building, viewed, true),
                 false,
-                ___distributionCenter.distributionRadius,
+                CenterState.GetRadius(___distributionCenter, viewed),
                 ref __result);
+        }
+    }
+
+    [HarmonyPatch(typeof(CollectionInfoPanel), "CollectionRadiusSliderChanged")]
+    internal static class CollectionRadiusPerResourcePatch
+    {
+        // 滑块只写入当前查看的物资。原方法接着用这个数值重算覆盖并移动范围圈。
+        private static void Prefix(
+            CollectionInfoPanel __instance,
+            float value,
+            CollectionProductionLogic ___collectionCenter)
+        {
+            if (___collectionCenter == null)
+            {
+                return;
+            }
+
+            CenterState.RememberRadius(
+                ___collectionCenter,
+                RangeReachability.ViewedResource(__instance, ___collectionCenter.resource),
+                value);
+        }
+    }
+
+    [HarmonyPatch(typeof(DistributionInfoPanel), "CollectionRadiusSliderChanged")]
+    internal static class DistributionRadiusPerResourcePatch
+    {
+        private static void Prefix(
+            DistributionInfoPanel __instance,
+            float value,
+            DistributionProductionLogic ___distributionCenter)
+        {
+            if (___distributionCenter == null)
+            {
+                return;
+            }
+
+            CenterState.RememberRadius(
+                ___distributionCenter,
+                RangeReachability.ViewedResource(__instance, ___distributionCenter.resource),
+                value);
         }
     }
 

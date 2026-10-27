@@ -483,9 +483,10 @@ namespace InfraSpaceMultiResourceLogistics
 
                 foreach (ConsumerProducer producer in producers)
                 {
+                    float radius = CenterState.GetRadius(center, resource);
                     if (!producer.building.IsValidAndBuilt() ||
                         Vector2.SqrMagnitude(producer.building.GetPosition().ToVector2XZ() - position) >
-                        center.collectionRadius * center.collectionRadius)
+                        radius * radius)
                     {
                         continue;
                     }
@@ -564,7 +565,7 @@ namespace InfraSpaceMultiResourceLogistics
                 foreach (CollectionProductionLogic center in registry.collectionCenters)
                 {
                     if (CenterState.Moves(center, resource) &&
-                        IsInRange(position, center.consumerProducer.building, center.collectionRadius))
+                        IsInRange(position, center.consumerProducer.building, CenterState.GetRadius(center, resource)))
                     {
                         AddConnection(consumerProducer, resource, center);
                     }
@@ -577,7 +578,7 @@ namespace InfraSpaceMultiResourceLogistics
                 {
                     Building source = center.consumerProducer?.building;
                     if (!CenterState.Moves(center, resource) ||
-                        !IsInRange(position, source, center.distributionRadius))
+                        !IsInRange(position, source, CenterState.GetRadius(center, resource)))
                     {
                         continue;
                     }
@@ -1084,7 +1085,7 @@ namespace InfraSpaceMultiResourceLogistics
             long buildingId = destination == null ? 0L : destination.GetID();
             bool inRange = destination != null &&
                            destination.IsValidAndBuilt() &&
-                           IsInRange(source.GetPosition().ToVector2XZ(), destination, center.distributionRadius);
+                           CoveredByMovingResource(center, source, destination);
             // 离开半径立刻解开。连续两次寻路失败只保留仍在半径内、原先能到的连接。
             if (!inRange)
             {
@@ -1176,7 +1177,7 @@ namespace InfraSpaceMultiResourceLogistics
                     Building destination = consumer?.building;
                     if (destination != null &&
                         destination.IsValidAndBuilt() &&
-                        IsInRange(position, destination, center.distributionRadius) &&
+                        IsInRange(position, destination, CenterState.GetRadius(center, resource)) &&
                         seen.Add(consumer))
                     {
                         candidates.Add(consumer);
@@ -1230,14 +1231,24 @@ namespace InfraSpaceMultiResourceLogistics
 
         private static void LinkDistribution(DistributionProductionLogic center, ConsumerProducer consumer)
         {
+            Building source = center.consumerProducer?.building;
+            Building destination = consumer?.building;
+            Vector2 origin = source == null ? Vector2.zero : source.GetPosition().ToVector2XZ();
+            bool linked = false;
             foreach (Resource resource in CenterState.GetResources(center))
             {
-                if (CenterState.IsStorageOnly(center, resource) ||
-                    IndexOf(consumer.incomingResources, resource) < 0)
+                bool serves = source != null &&
+                              destination != null &&
+                              !CenterState.IsStorageOnly(center, resource) &&
+                              IndexOf(consumer.incomingResources, resource) >= 0 &&
+                              IsInRange(origin, destination, CenterState.GetRadius(center, resource));
+                if (!serves)
                 {
+                    RemoveDistributionResource(consumer, resource, center);
                     continue;
                 }
 
+                linked = true;
                 if (consumer.connectedDistributionCenters != null &&
                     consumer.connectedDistributionCenters.TryGetValue(
                         resource,
@@ -1255,6 +1266,60 @@ namespace InfraSpaceMultiResourceLogistics
 
                 AddConnection(consumer, resource, center);
             }
+
+            if (!linked)
+            {
+                while (center.connectedConsumers.Remove(consumer))
+                {
+                }
+            }
+        }
+
+        private static bool CoveredByMovingResource(
+            DistributionProductionLogic center,
+            Building source,
+            Building destination)
+        {
+            if (source == null || destination == null)
+            {
+                return false;
+            }
+
+            Vector2 origin = source.GetPosition().ToVector2XZ();
+            Resource[] incoming = destination.consumerProducer?.incomingResources;
+            foreach (Resource resource in CenterState.GetResources(center))
+            {
+                if (resource == null ||
+                    CenterState.IsStorageOnly(center, resource) ||
+                    IndexOf(incoming, resource) < 0)
+                {
+                    continue;
+                }
+
+                if (IsInRange(origin, destination, CenterState.GetRadius(center, resource)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void RemoveDistributionResource(
+            ConsumerProducer consumer,
+            Resource resource,
+            DistributionProductionLogic center)
+        {
+            if (resource == null ||
+                consumer?.connectedDistributionCenters == null ||
+                !consumer.connectedDistributionCenters.TryGetValue(
+                    resource,
+                    out List<DistributionProductionLogic> centers))
+            {
+                return;
+            }
+
+            centers?.Remove(center);
         }
 
         private static bool RememberDistributionReach(long centerId, long buildingId, bool reachable)

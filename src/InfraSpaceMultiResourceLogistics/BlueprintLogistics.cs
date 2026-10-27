@@ -56,6 +56,9 @@ namespace InfraSpaceMultiResourceLogistics
                     capacities = settings.capacities == null
                         ? new Dictionary<string, int>()
                         : new Dictionary<string, int>(settings.capacities),
+                    radii = settings.radii == null
+                        ? new Dictionary<string, float>()
+                        : new Dictionary<string, float>(settings.radii),
                     storageOnly = settings.storageOnly == null
                         ? new List<string>()
                         : new List<string>(settings.storageOnly)

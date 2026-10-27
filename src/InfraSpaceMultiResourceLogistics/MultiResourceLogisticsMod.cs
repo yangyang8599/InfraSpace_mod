@@ -80,6 +80,9 @@ namespace InfraSpaceMultiResourceLogistics
 
         public Dictionary<string, int> capacities = new Dictionary<string, int>();
 
+        // 每种物资自己的覆盖半径。缺省或没有对应项时，沿用中心原来的单一半径。
+        public Dictionary<string, float> radii = new Dictionary<string, float>();
+
         // 仅存储的物资名称。缺省或为空表示全部正常搜集和配送。
         public List<string> storageOnly = new List<string>();
     }

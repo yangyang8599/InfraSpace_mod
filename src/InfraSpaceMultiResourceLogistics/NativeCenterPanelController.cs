@@ -155,16 +155,23 @@ namespace InfraSpaceMultiResourceLogistics
 
             IReadOnlyList<Resource> resources = GetResources(center);
             long buildingId = GetConsumerProducer(center).building.GetID();
-            if (buildingId != displayedBuildingId)
+            bool centerChanged = buildingId != displayedBuildingId;
+            if (centerChanged)
             {
                 viewedResourceName = null;
                 coverageCandidateKey = null;
                 coverageScanIndex = 0;
             }
 
+            string previousResource = viewedResource?.name;
             displayedBuildingId = buildingId;
             displayedResources = string.Join("|", resources.Select(resource => resource.name));
             StoreViewed(center);
+            if (centerChanged || viewedResource?.name != previousResource)
+            {
+                ShowViewedRadius(center);
+            }
+
             RebuildResourceChips(resources);
             SetPlusVisual();
             ApplyRoadWarnings();
@@ -1124,22 +1131,79 @@ namespace InfraSpaceMultiResourceLogistics
             coverageCandidateKey = null;
             coverageScanIndex = 0;
             StoreViewed(GetCenter());
+            ShowViewedRadius(GetCenter());
+        }
+
+        private void ShowViewedRadius(object center)
+        {
+            if (center == null || viewedResource == null)
+            {
+                return;
+            }
+
+            float radius;
+            Slider slider;
+            TMP_Text label;
+            Building building;
+            if (center is CollectionProductionLogic collection)
+            {
+                radius = CenterState.GetRadius(collection, viewedResource);
+                collection.collectionRadius = radius;
+                slider = collectionPanel?.collectionRadiusSlider;
+                label = collectionPanel?.collectionRadiusText;
+                building = collection.consumerProducer?.building;
+            }
+            else if (center is DistributionProductionLogic distribution)
+            {
+                radius = CenterState.GetRadius(distribution, viewedResource);
+                distribution.distributionRadius = radius;
+                slider = distributionPanel?.distributionRadiusSlider;
+                label = distributionPanel?.distributionRadiusText;
+                building = distribution.consumerProducer?.building;
+            }
+            else
+            {
+                return;
+            }
+
+            slider?.SetValueWithoutNotify(radius);
+            if (label != null)
+            {
+                label.text = radius.ToString("0.0");
+            }
+
+            building?.SetUpgradeEffectDecalRadius(radius);
             WorldScripts.Inst?.visualizationManager?.MarkDirty();
+        }
+
+        private static float RadiusOf(object center, Resource resource)
+        {
+            if (center is CollectionProductionLogic collection)
+            {
+                return CenterState.GetRadius(collection, resource);
+            }
+
+            if (center is DistributionProductionLogic distribution)
+            {
+                return CenterState.GetRadius(distribution, resource);
+            }
+
+            return 0f;
         }
 
         private static string CoverageNameTip(bool viewing, bool storageOnly)
         {
             if (!viewing)
             {
-                return "左键让地图只显示这种物资";
+                return "左键让地图和半径滑块切换到这种物资";
             }
 
             if (storageOnly)
             {
-                return "地图正在显示这种物资\n它只存储，建筑不会上色";
+                return "地图正在显示这种物资\n半径滑块调节的是它的范围\n它只存储，建筑不会上色";
             }
 
-            return "地图正在显示这种物资\n半径内能到为绿，没路为红，半径外为黄";
+            return "地图正在显示这种物资\n半径滑块调节的是它的范围\n半径内能到为绿，没路为红，半径外为黄";
         }
 
         private void AdvanceCoverageQueries(object center)
@@ -1163,9 +1227,7 @@ namespace InfraSpaceMultiResourceLogistics
                 return;
             }
 
-            float radius = center is CollectionProductionLogic collection
-                ? collection.collectionRadius
-                : ((DistributionProductionLogic)center).distributionRadius;
+            float radius = RadiusOf(center, viewedResource);
             bool towardCenter = center is CollectionProductionLogic;
             Vector2 origin = centerBuilding.GetPosition().ToVector2XZ();
             float radiusSquared = radius * radius;
@@ -1332,12 +1394,8 @@ namespace InfraSpaceMultiResourceLogistics
 
             bool towardCenter = center is CollectionProductionLogic;
             bool consumer = !towardCenter;
-            float radius = towardCenter
-                ? ((CollectionProductionLogic)center).collectionRadius
-                : ((DistributionProductionLogic)center).distributionRadius;
             float distance = Vector2.SqrMagnitude(
                 covered.GetPosition().ToVector2XZ() - centerBuilding.GetPosition().ToVector2XZ());
-            bool inRange = distance <= radius * radius;
             IReadOnlyList<Resource> resources = GetResources(center);
             StringBuilder text = null;
             for (int i = 0; i < resources.Count; i++)
@@ -1348,6 +1406,8 @@ namespace InfraSpaceMultiResourceLogistics
                     continue;
                 }
 
+                float radius = RadiusOf(center, resource);
+                bool inRange = distance <= radius * radius;
                 string status = CoverageStatus(center, centerBuilding, covered, resource, towardCenter, inRange);
                 if (text == null)
                 {
