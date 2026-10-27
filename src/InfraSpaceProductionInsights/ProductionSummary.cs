@@ -11,6 +11,9 @@ namespace InfraSpaceProductionInsights
         private static readonly AccessTools.FieldRef<PrioritizationItem, Resource> ResourceOf =
             AccessTools.FieldRefAccess<PrioritizationItem, Resource>("resource");
 
+        private static readonly AccessTools.FieldRef<PrioritizationPanel, byte> DistrictOf =
+            AccessTools.FieldRefAccess<PrioritizationPanel, byte>("selectedDistrict");
+
         private static PrioritizationItem summary;
         private static bool unavailable;
 
@@ -41,7 +44,7 @@ namespace InfraSpaceProductionInsights
                     continue;
                 }
 
-                int producedBy = ProducerCounts.Count(ResourceOf(item));
+                int producedBy = ProducerCounts.Count(ResourceOf(item), DistrictOf(panel));
                 buildings += producedBy;
                 SetCount(item, producedBy);
 

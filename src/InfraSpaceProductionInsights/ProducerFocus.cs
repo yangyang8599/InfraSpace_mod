@@ -1,18 +1,32 @@
 using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace InfraSpaceProductionInsights
 {
     internal static class ProducerFocus
     {
+        private const string Tip = "单击：用绿色标出生产该物品的建筑\n双击：用蓝色标出需要该物品的建筑";
+
+        private static readonly Color SupplyColor = new Color(0.22f, 0.86f, 0.38f, 1f);
+        private static readonly Color DemandColor = new Color(0.25f, 0.55f, 1f, 1f);
+
         private static readonly AccessTools.FieldRef<PrioritizationItem, Resource> ResourceOf =
             AccessTools.FieldRefAccess<PrioritizationItem, Resource>("resource");
+
+        private static readonly AccessTools.FieldRef<PrioritizationPanel, byte> DistrictOf =
+            AccessTools.FieldRefAccess<PrioritizationPanel, byte>("selectedDistrict");
 
         private static readonly List<ProducerFocusButton> Hooked = new List<ProducerFocusButton>();
 
         private static Resource selected;
+        private static bool demand;
+        private static PrioritizationItem pending;
+        private static float pendingAt;
+        private static Material supplyMaterial;
+        private static Material demandMaterial;
         private static VisualizationPanel hookedVisualization;
         private static int hookedChildren = -1;
         private static int paintedFrame = -1;
@@ -20,6 +34,7 @@ namespace InfraSpaceProductionInsights
         internal static void Tick()
         {
             HookVisualization();
+            FlushPendingClick();
             PrioritizationPanel panel = WorldScripts.Inst?.productionPanel;
             if (panel == null || panel.prioItemParent == null || !panel.gameObject.activeInHierarchy)
             {
@@ -44,6 +59,8 @@ namespace InfraSpaceProductionInsights
             }
 
             selected = null;
+            demand = false;
+            pending = null;
             Paint();
             WorldScripts.Inst?.visualizationManager?.MarkDirty();
         }
@@ -91,14 +108,74 @@ namespace InfraSpaceProductionInsights
                 return;
             }
 
-            Color clear = new Color(0f, 0f, 0f, 1f);
+            Material material = HighlightMaterial();
+            if (material == null)
+            {
+                return;
+            }
+
+            byte district = SelectedDistrict();
             foreach (Building building in buildings)
             {
-                if (ProducerCounts.Produces(building, selected))
+                if (!ProducerCounts.InDistrict(building, district))
                 {
-                    building.SetOverrideMaterial(null, clear);
+                    continue;
+                }
+
+                bool match = demand
+                    ? ProducerCounts.Demands(building, selected)
+                    : ProducerCounts.Produces(building, selected);
+                if (match)
+                {
+                    building.SetOverrideMaterial(material, material.color);
                 }
             }
+        }
+
+        private static byte SelectedDistrict()
+        {
+            PrioritizationPanel panel = WorldScripts.Inst?.productionPanel;
+            if (panel == null || !panel.gameObject.activeInHierarchy)
+            {
+                return 0;
+            }
+
+            return DistrictOf(panel);
+        }
+
+        private static Material HighlightMaterial()
+        {
+            if (demand)
+            {
+                if (demandMaterial == null)
+                {
+                    demandMaterial = CreateMaterial(DemandColor);
+                }
+
+                return demandMaterial;
+            }
+
+            if (supplyMaterial == null)
+            {
+                supplyMaterial = CreateMaterial(SupplyColor);
+            }
+
+            return supplyMaterial;
+        }
+
+        private static Material CreateMaterial(Color color)
+        {
+            Shader shader = Shader.Find("Standard");
+            if (shader == null)
+            {
+                return WorldScripts.Inst?.visualizationManager?.selectableDefaultMat;
+            }
+
+            Material material = new Material(shader);
+            material.hideFlags = HideFlags.HideAndDontSave;
+            material.enableInstancing = true;
+            material.color = color;
+            return material;
         }
 
         private static void Hook(PrioritizationPanel panel)
@@ -121,22 +198,42 @@ namespace InfraSpaceProductionInsights
                 ProducerFocusButton hook = item.icon.gameObject.AddComponent<ProducerFocusButton>();
                 hook.Item = item;
                 hook.OriginalIconColor = item.icon.color;
-                Button button = item.icon.gameObject.GetComponent<Button>();
-                if (button == null)
-                {
-                    button = item.icon.gameObject.AddComponent<Button>();
-                }
-
-                button.transition = Selectable.Transition.None;
-                Navigation navigation = button.navigation;
-                navigation.mode = Navigation.Mode.None;
-                button.navigation = navigation;
-                button.onClick.AddListener(hook.Click);
+                EnsureTip(item);
                 Hooked.Add(hook);
             }
         }
 
-        private static void Toggle(PrioritizationItem item)
+        private static void NotifyClick(PrioritizationItem item, int clickCount)
+        {
+            if (item == null)
+            {
+                return;
+            }
+
+            if (clickCount >= 2)
+            {
+                pending = null;
+                Apply(item, true);
+                return;
+            }
+
+            pending = item;
+            pendingAt = Time.unscaledTime;
+        }
+
+        private static void FlushPendingClick()
+        {
+            if (pending == null || Time.unscaledTime - pendingAt < 0.28f)
+            {
+                return;
+            }
+
+            PrioritizationItem item = pending;
+            pending = null;
+            Apply(item, false);
+        }
+
+        private static void Apply(PrioritizationItem item, bool showDemand)
         {
             if (item == null)
             {
@@ -149,7 +246,7 @@ namespace InfraSpaceProductionInsights
                 return;
             }
 
-            if (Same(selected, resource))
+            if (Same(selected, resource) && demand == showDemand)
             {
                 Clear();
                 return;
@@ -157,8 +254,35 @@ namespace InfraSpaceProductionInsights
 
             ProducerList.Dismiss();
             selected = resource;
+            demand = showDemand;
             Paint();
             WorldScripts.Inst?.visualizationManager?.MarkDirty();
+        }
+
+        private static void EnsureTip(PrioritizationItem item)
+        {
+            if (item?.icon == null)
+            {
+                return;
+            }
+
+            TooltipHoverable tip = item.icon.GetComponent<TooltipHoverable>();
+            if (tip == null && item.tooltip != null && item.tooltip.gameObject == item.icon.gameObject)
+            {
+                tip = item.tooltip;
+            }
+
+            if (tip == null)
+            {
+                tip = item.icon.gameObject.AddComponent<TooltipHoverable>();
+            }
+
+            Resource resource = ResourceOf(item);
+            string title = resource != null ? resource.GetNameInGame() : "";
+            if (tip.GetTitle() != title || tip.GetDescription() != Tip)
+            {
+                tip.Init(title, Tip);
+            }
         }
 
         private static void Paint()
@@ -173,6 +297,7 @@ namespace InfraSpaceProductionInsights
                 }
 
                 Image icon = hook.Item.icon;
+                EnsureTip(hook.Item);
                 bool chosen = selected != null && Same(ResourceOf(hook.Item), selected);
                 Color color = selected == null || chosen
                     ? hook.OriginalIconColor
@@ -212,14 +337,19 @@ namespace InfraSpaceProductionInsights
                 || visualType == VisualType.TerraformProgress;
         }
 
-        private sealed class ProducerFocusButton : MonoBehaviour
+        private sealed class ProducerFocusButton : MonoBehaviour, IPointerClickHandler
         {
             internal PrioritizationItem Item;
             internal Color OriginalIconColor = Color.white;
 
-            internal void Click()
+            public void OnPointerClick(PointerEventData eventData)
             {
-                Toggle(Item);
+                if (eventData == null || eventData.button != PointerEventData.InputButton.Left)
+                {
+                    return;
+                }
+
+                NotifyClick(Item, eventData.clickCount);
             }
         }
     }
