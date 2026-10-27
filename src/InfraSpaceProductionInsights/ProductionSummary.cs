@@ -538,6 +538,11 @@ namespace InfraSpaceProductionInsights
 
         private static void SortRows(PrioritizationPanel panel, byte district)
         {
+            if (district != 0)
+            {
+                DistrictBalance.Ensure(district);
+            }
+
             Ordered.Clear();
             PrioritizationItem[] items = panel.prioItemParent.GetComponentsInChildren<PrioritizationItem>(true);
             for (int i = 0; i < items.Length; i++)
@@ -595,8 +600,7 @@ namespace InfraSpaceProductionInsights
                 return 0;
             }
 
-            double consumption;
-            if (!TryParse(item.consumptionText.text, out consumption) || consumption <= 1e-4d)
+            if (DistrictBalance.IsRecipeFinal(resource))
             {
                 return 2;
             }
@@ -611,7 +615,7 @@ namespace InfraSpaceProductionInsights
                 return false;
             }
 
-            if (resource.name == "industrialRobot" || resource.name == "highTechTool")
+            if (resource.name == "organicWaste")
             {
                 return true;
             }

@@ -16,25 +16,72 @@ namespace InfraSpaceProductionInsights
             public bool Scaled;
 
             public double Scale;
+
+            // 地区里还没建的配方。只用来换算原料，不能把它自己的产出当成最终产物。
+            public bool Gap;
         }
 
         internal static Dictionary<T, double> Solve<T>(
             IReadOnlyList<Node<T>> nodes,
-            IReadOnlyDictionary<T, double> endUse)
+            Func<T, Node<T>> missingRecipe,
+            Func<T, bool> rawInput)
+        {
+            var graph = new List<Node<T>>(nodes);
+            Dictionary<T, double> demand = null;
+            for (int attempt = 0; attempt < 64; attempt++)
+            {
+                for (int i = 0; i < graph.Count; i++)
+                {
+                    graph[i].Scaled = false;
+                    graph[i].Scale = 0d;
+                }
+
+                int before = graph.Count;
+                demand = SolveOnce(graph, missingRecipe, rawInput);
+                if (graph.Count == before)
+                {
+                    return demand;
+                }
+            }
+
+            for (int i = 0; i < graph.Count; i++)
+            {
+                graph[i].Scaled = false;
+                graph[i].Scale = 0d;
+            }
+
+            return SolveOnce(graph, null, rawInput);
+        }
+
+        private static Dictionary<T, double> SolveOnce<T>(
+            List<Node<T>> nodes,
+            Func<T, Node<T>> missingRecipe,
+            Func<T, bool> rawInput)
         {
             var production = new Dictionary<T, double>();
-            var consumption = new Dictionary<T, double>();
+            var placedProduction = new Dictionary<T, double>();
+            var factoryUse = new Dictionary<T, double>();
             var consumers = new Dictionary<T, List<Node<T>>>();
             foreach (Node<T> node in nodes)
             {
                 foreach (KeyValuePair<T, double> output in node.Outputs)
                 {
                     Add(production, output.Key, output.Value);
+                    if (!node.Gap)
+                    {
+                        Add(placedProduction, output.Key, output.Value);
+                    }
                 }
 
                 foreach (KeyValuePair<T, double> input in node.Inputs)
                 {
-                    Add(consumption, input.Key, input.Value);
+                    // 同一条产线吃掉自己的产出，不把它变成中间产物，也不参加反推。
+                    if (node.Outputs.ContainsKey(input.Key))
+                    {
+                        continue;
+                    }
+
+                    Add(factoryUse, input.Key, input.Value);
                     if (!consumers.TryGetValue(input.Key, out List<Node<T>> list))
                     {
                         list = new List<Node<T>>();
@@ -45,18 +92,10 @@ namespace InfraSpaceProductionInsights
                 }
             }
 
-            if (endUse != null)
-            {
-                foreach (KeyValuePair<T, double> pair in endUse)
-                {
-                    Add(consumption, pair.Key, pair.Value);
-                }
-            }
-
             var finals = new HashSet<T>();
-            foreach (KeyValuePair<T, double> pair in production)
+            foreach (KeyValuePair<T, double> pair in placedProduction)
             {
-                consumption.TryGetValue(pair.Key, out double used);
+                factoryUse.TryGetValue(pair.Key, out double used);
                 if (pair.Value > Zero && used <= Zero)
                 {
                     finals.Add(pair.Key);
@@ -66,7 +105,7 @@ namespace InfraSpaceProductionInsights
             var spokenFor = new Dictionary<T, double>();
             var resolved = new HashSet<T>(finals);
             var resources = new HashSet<T>(production.Keys);
-            foreach (T resource in consumption.Keys)
+            foreach (T resource in factoryUse.Keys)
             {
                 resources.Add(resource);
             }
@@ -83,13 +122,7 @@ namespace InfraSpaceProductionInsights
                     continue;
                 }
 
-                double needed = 0d;
-                if (endUse != null)
-                {
-                    endUse.TryGetValue(resource, out needed);
-                }
-
-                spokenFor[resource] = needed;
+                spokenFor[resource] = 0d;
                 resolved.Add(resource);
             }
 
@@ -104,7 +137,7 @@ namespace InfraSpaceProductionInsights
                         continue;
                     }
 
-                    if (!TryScale(node, production, finals, resolved, spokenFor))
+                    if (!TryScale(node, production, finals, resolved, spokenFor, rawInput))
                     {
                         continue;
                     }
@@ -135,20 +168,30 @@ namespace InfraSpaceProductionInsights
                     }
 
                     double needed = 0d;
-                    if (endUse != null)
-                    {
-                        endUse.TryGetValue(resource, out needed);
-                    }
-
                     foreach (Node<T> node in list)
                     {
                         node.Inputs.TryGetValue(resource, out double input);
+                        if (node.Outputs.ContainsKey(resource))
+                        {
+                            continue;
+                        }
+
                         needed += input * node.Scale;
                     }
 
                     spokenFor[resource] = needed;
                     resolved.Add(resource);
                     progress = true;
+                    production.TryGetValue(resource, out double produced);
+                    bool raw = rawInput != null && rawInput(resource);
+                    if (needed > Zero && produced <= Zero && missingRecipe != null && !raw)
+                    {
+                        Node<T> recipe = missingRecipe(resource);
+                        if (recipe != null)
+                        {
+                            nodes.Add(recipe);
+                        }
+                    }
                 }
 
                 if (!progress)
@@ -178,7 +221,8 @@ namespace InfraSpaceProductionInsights
             Dictionary<T, double> production,
             HashSet<T> finals,
             HashSet<T> resolved,
-            Dictionary<T, double> spokenFor)
+            Dictionary<T, double> spokenFor,
+            Func<T, bool> rawInput)
         {
             double scale = 0d;
             bool anyOutput = false;
@@ -190,6 +234,11 @@ namespace InfraSpaceProductionInsights
                 }
 
                 anyOutput = true;
+                if (rawInput != null && rawInput(output.Key))
+                {
+                    continue;
+                }
+
                 if (!resolved.Contains(output.Key))
                 {
                     return false;
@@ -207,7 +256,12 @@ namespace InfraSpaceProductionInsights
                     spokenFor.TryGetValue(output.Key, out basis);
                 }
 
-                scale = Math.Max(scale, Math.Min(1d, basis / produced));
+                // 不封顶。中间建筑比最终产物少时，需求仍按最终产物的满员配方往上长。
+                double ratio = basis / produced;
+                if (ratio > scale)
+                {
+                    scale = ratio;
+                }
             }
 
             if (!anyOutput)

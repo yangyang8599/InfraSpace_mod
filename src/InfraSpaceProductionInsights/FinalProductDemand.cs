@@ -21,8 +21,10 @@ namespace InfraSpaceProductionInsights
 
             if (cachedFrame != Time.frameCount || cachedDistrict != district)
             {
-                ProductionSnapshots.Copy(district, out List<DemandPull.Node<Resource>> nodes, out Dictionary<Resource, double> endUse);
-                cachedDemand = DemandPull.Solve(nodes, endUse);
+                cachedDemand = DemandPull.Solve(
+                    ProductionSnapshots.NominalNodes(district),
+                    ProductionSnapshots.MissingRecipeScope(),
+                    ProductionSnapshots.IsRawInput);
                 cachedFrame = Time.frameCount;
                 cachedDistrict = district;
             }
