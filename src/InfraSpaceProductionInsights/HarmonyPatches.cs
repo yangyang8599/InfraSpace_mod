@@ -21,6 +21,7 @@ namespace InfraSpaceProductionInsights
         {
             FinalProductToggle.Install(__instance);
             FinalProductToggle.Sync(__instance);
+            LiveConsumption.Install(__instance);
         }
 
         private static void Postfix(PrioritizationPanel __instance)
@@ -39,9 +40,132 @@ namespace InfraSpaceProductionInsights
 
         private static void Postfix(PrioritizationItem __instance, byte district)
         {
+            ApplyLiveConsumption(__instance, district);
+            ApplyLiveProduction(__instance, district);
             ApplyFinalProductDemand(__instance, district);
             ApplyDistrictBalance(__instance, district);
+            NoteLiveConsumption(__instance);
+            NoteLiveProduction(__instance);
             HideIfIdle(__instance, district);
+        }
+
+        private static void ApplyLiveConsumption(PrioritizationItem item, byte district)
+        {
+            if (!LiveConsumption.ConsumptionEnabled || FinalProductToggle.IsArmed || item?.consumptionText == null)
+            {
+                return;
+            }
+
+            if (!LiveConsumption.TryGet(district, ResourceOf(item), out double live))
+            {
+                return;
+            }
+
+            item.consumptionText.text = FormatRate(live);
+        }
+
+        private static void ApplyLiveProduction(PrioritizationItem item, byte district)
+        {
+            if (!LiveConsumption.ProductionEnabled || FinalProductToggle.IsArmed || item?.productionText == null)
+            {
+                return;
+            }
+
+            if (!LiveConsumption.TryGetProduction(district, ResourceOf(item), out double live))
+            {
+                return;
+            }
+
+            item.productionText.text = FormatRate(live);
+        }
+
+        private static void NoteLiveConsumption(PrioritizationItem item)
+        {
+            if (!LiveConsumption.ConsumptionEnabled || FinalProductToggle.IsArmed || item?.consumptionText == null)
+            {
+                return;
+            }
+
+            Resource resource = ResourceOf(item);
+            if (resource == null || resource.name == "power")
+            {
+                return;
+            }
+
+            string live = LiveConsumption.ConsumptionCellNote();
+            TMP_Text text = item.consumptionText;
+            text.raycastTarget = true;
+            TooltipHoverable tip = text.GetComponent<TooltipHoverable>();
+            if (tip == null)
+            {
+                tip = text.gameObject.AddComponent<TooltipHoverable>();
+            }
+
+            tip.enabled = true;
+            string body = WithoutLiveNote(tip.GetDescription());
+            string next = string.IsNullOrEmpty(body) ? live : body + "\n\n" + live;
+            if ((tip.GetDescription() ?? "") == next)
+            {
+                return;
+            }
+
+            tip.Init(string.IsNullOrEmpty(body) ? "实时消耗" : tip.GetTitle(), next);
+        }
+
+        private static void NoteLiveProduction(PrioritizationItem item)
+        {
+            if (!LiveConsumption.ProductionEnabled || FinalProductToggle.IsArmed || item?.productionText == null)
+            {
+                return;
+            }
+
+            Resource resource = ResourceOf(item);
+            if (resource == null || resource.name == "power")
+            {
+                return;
+            }
+
+            string live = LiveConsumption.ProductionCellNote();
+            TMP_Text text = item.productionText;
+            text.raycastTarget = true;
+            TooltipHoverable tip = text.GetComponent<TooltipHoverable>();
+            if (tip == null)
+            {
+                tip = text.gameObject.AddComponent<TooltipHoverable>();
+            }
+
+            tip.enabled = true;
+            string body = WithoutLiveNote(tip.GetDescription());
+            string next = string.IsNullOrEmpty(body) ? live : body + "\n\n" + live;
+            if ((tip.GetDescription() ?? "") == next)
+            {
+                return;
+            }
+
+            tip.Init(string.IsNullOrEmpty(body) ? "实时产量" : tip.GetTitle(), next);
+        }
+
+        private static string WithoutLiveNote(string body)
+        {
+            if (string.IsNullOrEmpty(body))
+            {
+                return "";
+            }
+
+            int instant = body.IndexOf("这一拍", System.StringComparison.Ordinal);
+            int minute = body.IndexOf("最近连续", System.StringComparison.Ordinal);
+            int cut = instant < 0 ? minute : minute < 0 ? instant : System.Math.Min(instant, minute);
+            if (cut < 0)
+            {
+                return body;
+            }
+
+            if (cut >= 2 && body[cut - 1] == '\n' && body[cut - 2] == '\n')
+            {
+                cut -= 2;
+            }
+
+            return body.Substring(0, cut).Trim();
         }
 
         private static void ApplyFinalProductDemand(PrioritizationItem item, byte district)
@@ -113,7 +237,8 @@ namespace InfraSpaceProductionInsights
             }
 
             double production;
-            if (maintenance || !TryParse(item.productionText.text, out production))
+            if (!LiveConsumption.TryGetProduction(district, resource, out production) &&
+                (maintenance || !TryParse(item.productionText.text, out production)))
             {
                 production = Old.GetSimulator().market.GetProductionPerMinute(resource, district);
                 double scanned = DistrictBalance.ScannedProduction(resource);
@@ -169,6 +294,11 @@ namespace InfraSpaceProductionInsights
             ClearColorTip(item.productionText);
             if (!maintenance && !FinalProductToggle.IsArmed)
             {
+                if (LiveConsumption.ConsumptionEnabled || LiveConsumption.ProductionEnabled)
+                {
+                    PaintRate(item.productionText, production, consumption);
+                }
+
                 return;
             }
 
@@ -192,6 +322,14 @@ namespace InfraSpaceProductionInsights
             if (!DistrictBalance.IsMaintenance(resource) || !item.gameObject.activeSelf)
             {
                 ClearColorTip(item.consumptionText);
+                if ((LiveConsumption.ConsumptionEnabled || LiveConsumption.ProductionEnabled) &&
+                    item.productionText != null &&
+                    TryParse(item.productionText.text, out double liveProduction) &&
+                    TryParse(item.consumptionText.text, out double liveConsumption))
+                {
+                    PaintRate(item.productionText, liveProduction, liveConsumption);
+                }
+
                 return;
             }
 
@@ -329,6 +467,27 @@ namespace InfraSpaceProductionInsights
             }
 
             SetColorTip(text, title, body);
+        }
+
+        private static void PaintRate(TMP_Text text, double production, double consumption)
+        {
+            if (text == null)
+            {
+                return;
+            }
+
+            if (production < 0.75d * consumption)
+            {
+                text.color = Dashboard.redTextColor;
+            }
+            else if (production < 0.98d * consumption)
+            {
+                text.color = Dashboard.yellowTextColor;
+            }
+            else
+            {
+                text.color = new Color(1f, 1f, 1f, 1f);
+            }
         }
 
         private static void SetUnderline(TMP_Text text, bool enabled)
