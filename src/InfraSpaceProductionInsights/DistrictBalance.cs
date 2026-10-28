@@ -18,6 +18,7 @@ namespace InfraSpaceProductionInsights
 
         private static int frame = -1;
         private static byte cachedDistrict;
+        private static bool fermenter;
         private static double robotUse;
         private static double toolUse;
         private static int robotBuildings;
@@ -32,6 +33,7 @@ namespace InfraSpaceProductionInsights
 
             frame = Time.frameCount;
             cachedDistrict = district;
+            fermenter = false;
             robotUse = 0d;
             toolUse = 0d;
             robotBuildings = 0;
@@ -52,6 +54,11 @@ namespace InfraSpaceProductionInsights
                 if (!ProducerCounts.InDistrict(building, district) || !building.IsValidAndBuilt())
                 {
                     continue;
+                }
+
+                if (building.GetDescription()?.name == "methaneFermentationPlant")
+                {
+                    fermenter = true;
                 }
 
                 CountMaintenance(building, robots, tools);
@@ -117,6 +124,38 @@ namespace InfraSpaceProductionInsights
         }
 
         // 本地区有配方产出，且没有别的配方把它当原料。同一条产线消耗自己的产出不算。
+        internal static bool HasFermenter(byte district)
+        {
+            Ensure(district);
+            return fermenter;
+        }
+
+        internal static bool HasProducer(Resource resource)
+        {
+            return resource != null &&
+                   !string.IsNullOrEmpty(resource.name) &&
+                   ProducedByRecipe.Contains(resource.name);
+        }
+
+        // 普通最终产物，以及本区有生产建筑的机器人、高科和有机废料。
+        internal static bool IsStatFinal(Resource resource)
+        {
+            if (IsRecipeFinal(resource))
+            {
+                return true;
+            }
+
+            if (resource == null)
+            {
+                return false;
+            }
+
+            return (resource.name == "industrialRobot" ||
+                    resource.name == "highTechTool" ||
+                    resource.name == "organicWaste") &&
+                   ProducedByRecipe.Contains(resource.name);
+        }
+
         internal static bool IsRecipeFinal(Resource resource)
         {
             return resource != null &&

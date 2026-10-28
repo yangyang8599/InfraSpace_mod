@@ -21,30 +21,29 @@ namespace InfraSpaceProductionInsights
             "左边是这种物资的工人总数，右边是平均每座生产建筑的工人。例如 10/5 表示一共 10 人，每座建筑 5 人。";
 
         private const string EfficiencyTip =
-            "只在勾选最终产物时出现。\n\n" +
-            "工人：每生产 1 个最终产物占用的工人\n" +
-            "耗电：每生产 1 个最终产物消耗的电\n" +
-            "建筑：每生产 1 个最终产物占用的建筑\n\n" +
-            "分母是当前可见的最终产物产量之和。\n" +
-            "分子包含为这些产物配套的中间产物。\n" +
-            "一座厂产出多种物资只算一座。\n" +
-            "电力不计入。\n\n" +
-            "鼠标放在右边三个数字上，可查看本次计入的建筑、分子、分母和算式。";
+            "地区统计和规划模式统计都会出现。全局统计没有这一行。\n\n" +
+            "工人：每生产 1 个最终产物净产出占用的工人\n" +
+            "耗电：每生产 1 个最终产物净产出消耗的电\n" +
+            "原料：没有生产建筑的物品，数量不含居民消费\n\n" +
+            "净产出 = 产量 − 不含居民的消费。磨损要扣。\n" +
+            "居民吃掉的最终产物不减少净产出。\n" +
+            "净产出小于或等于 0 的不进分母。\n" +
+            "工业机器人、高科技工具、有机废料没有生产建筑时算原料。\n\n" +
+            "鼠标放在右边三个数字上，可查看分子、分母和算式。";
 
         private const int TipLineLimit = 10;
 
         private static readonly HashSet<string> VisibleNames = new HashSet<string>();
 
-        private static readonly HashSet<string> FactoryInputs = new HashSet<string>();
-
         private static readonly Dictionary<string, double> Produced = new Dictionary<string, double>();
+
+        private static readonly Dictionary<string, double> Operational = new Dictionary<string, double>();
 
         private static readonly Dictionary<string, double> WorkersByName = new Dictionary<string, double>();
 
-        private static readonly Dictionary<string, Dictionary<string, int>> ProducersByResource =
-            new Dictionary<string, Dictionary<string, int>>();
+        private static readonly Dictionary<string, double> InputRates = new Dictionary<string, double>();
 
-        private static readonly Dictionary<string, int> ChainIndex = new Dictionary<string, int>();
+        private static readonly List<string> NetNotes = new List<string>();
 
         private static readonly List<Contributor> ChainLines = new List<Contributor>();
 
@@ -52,13 +51,9 @@ namespace InfraSpaceProductionInsights
 
         private static readonly List<Contributor> FinalLines = new List<Contributor>();
 
-        private static readonly List<Contributor> AnyLines = new List<Contributor>();
-
         private static readonly List<Contributor> Ranked = new List<Contributor>();
 
         private static readonly List<Contributor> NameRank = new List<Contributor>();
-
-        private static readonly List<string> VisibleProducts = new List<string>();
 
         private static readonly StringBuilder TipText = new StringBuilder(768);
 
@@ -70,16 +65,11 @@ namespace InfraSpaceProductionInsights
         private static TooltipHoverable workerFigureTip;
         private static TooltipHoverable powerFigureTip;
         private static TooltipHoverable buildingFigureTip;
-        private static bool denominatorFallback;
         private static bool unavailable;
         private static bool workerTipReady;
-        private static bool mineralsReady;
-
         private static readonly Dictionary<int, int> OriginalSibling = new Dictionary<int, int>();
 
         private static readonly List<PrioritizationItem> Ordered = new List<PrioritizationItem>();
-
-        private static readonly HashSet<string> Minerals = new HashSet<string>();
 
         private struct Contributor
         {
@@ -104,8 +94,8 @@ namespace InfraSpaceProductionInsights
 
             EnsureWorkerTip(panel);
             VisibleNames.Clear();
-            FactoryInputs.Clear();
             Produced.Clear();
+            Operational.Clear();
             WorkersByName.Clear();
             double workers = 0d;
             double itemWorkers = 0d;
@@ -154,6 +144,19 @@ namespace InfraSpaceProductionInsights
 
                 VisibleNames.Add(resource.name);
                 Produced[resource.name] = produced;
+                double habitat = 0d;
+                if (district != 0 && !FinalProductToggle.IsArmed)
+                {
+                    habitat = ProductionSnapshots.HabitatUse(district, resource.name);
+                }
+
+                double operational = consumed - habitat;
+                if (operational < 0d)
+                {
+                    operational = 0d;
+                }
+
+                Operational[resource.name] = operational;
                 WorkersByName[resource.name] = workerValue;
                 itemWorkers += workerValue;
             }
@@ -312,7 +315,7 @@ namespace InfraSpaceProductionInsights
                 return;
             }
 
-            if (!FinalProductToggle.IsArmed)
+            if (district == 0)
             {
                 if (efficiency.gameObject.activeSelf)
                 {
@@ -327,113 +330,121 @@ namespace InfraSpaceProductionInsights
                 efficiency.gameObject.SetActive(true);
             }
 
-            int chainBuildings;
-            double chainPower;
-            MeasureChain(district, out chainBuildings, out chainPower);
+            ClearChain();
+            double chainPower = EfficiencyPower(district);
+            FillRawRates(district);
             double output = CollectDenominator();
             efficiency.employmentTotal.text = PerItem(itemWorkers, output);
             efficiency.productionText.text = PerItem(chainPower, output);
-            efficiency.consumptionText.text = PerItem(chainBuildings, output);
+            efficiency.consumptionText.text = InputCell(output);
             efficiency.productionText.color = Color.white;
             efficiency.transform.SetAsLastSibling();
             FillWorkerLines();
             SetFigureTips(
                 itemWorkers,
                 chainPower,
-                chainBuildings,
                 output,
                 efficiency.employmentTotal.text,
                 efficiency.productionText.text,
                 efficiency.consumptionText.text);
         }
 
-        private static void MeasureChain(byte district, out int buildings, out double power)
+        private static double EfficiencyPower(byte district)
         {
-            buildings = 0;
-            power = 0d;
-            ClearChain();
-            IEnumerable<Building> all = WorldScripts.Inst?.registry?.builtBuildings;
-            if (all == null)
+            if (FinalProductToggle.IsArmed)
             {
-                return;
+                return FinalProductDemand.PlannedPower(district);
             }
 
-            foreach (Building building in all)
+            Resource power = Resource.Get("power");
+            return Old.GetSimulator()?.market?.GetConsumptionPerSecond(power, district) ?? 0d;
+        }
+
+        private static void FillRawRates(byte district)
+        {
+            InputRates.Clear();
+            DistrictBalance.Ensure(district);
+            foreach (KeyValuePair<string, double> pair in Operational)
             {
-                if (!ProducerCounts.InDistrict(building, district))
+                if (pair.Value <= 1e-6d || pair.Key == "power")
                 {
                     continue;
                 }
 
-                if (!(building.consumerProducer?.productionLogic is FactoryProductionLogic factory)
-                    || factory.productionDefinition == null)
+                Resource resource = Resource.Get(pair.Key);
+                if (DistrictBalance.HasProducer(resource))
                 {
                     continue;
                 }
 
-                List<ResourceCost> costs = factory.productionDefinition.consumables;
-                if (costs != null)
-                {
-                    for (int i = 0; i < costs.Count; i++)
-                    {
-                        Resource input = costs[i].resource;
-                        if (input != null && !string.IsNullOrEmpty(input.name))
-                        {
-                            FactoryInputs.Add(input.name);
-                        }
-                    }
-                }
+                InputRates[pair.Key] = pair.Value;
+            }
+        }
 
-                VisibleProducts.Clear();
-                ProducerCounts.AppendMatchingProducts(building, VisibleNames, VisibleProducts);
-                if (VisibleProducts.Count == 0)
-                {
-                    continue;
-                }
+        private static string InputCell(double output)
+        {
+            if (output <= 1e-6d || InputRates.Count == 0)
+            {
+                return "—";
+            }
 
-                buildings++;
-                double needed = 0d;
-                if (factory.consumerProducer != null)
+            if (InputRates.Count == 1)
+            {
+                foreach (double perMinute in InputRates.Values)
                 {
-                    needed = factory.consumerProducer.lastStepPowerNeeded;
-                    power += needed;
-                }
-
-                string buildingName = BuildingLabel(building);
-                AddChain(buildingName, needed);
-                for (int product = 0; product < VisibleProducts.Count; product++)
-                {
-                    NoteProducer(VisibleProducts[product], buildingName);
+                    return PerItem(perMinute, output);
                 }
             }
+
+            return InputRates.Count.ToString() + "种";
         }
 
         private static double CollectDenominator()
         {
             FinalLines.Clear();
-            AnyLines.Clear();
+            NetNotes.Clear();
             double finals = 0d;
-            double any = 0d;
             foreach (KeyValuePair<string, double> pair in Produced)
             {
-                Contributor line = new Contributor
+                Resource resource = Resource.Get(pair.Key);
+                if (!DistrictBalance.IsStatFinal(resource))
+                {
+                    continue;
+                }
+
+                Operational.TryGetValue(pair.Key, out double used);
+                double net = pair.Value - used;
+                if (pair.Value <= 1e-6d && used <= 1e-6d)
+                {
+                    continue;
+                }
+
+                string label = ResourceLabel(pair.Key);
+                if (used > 1e-6d || net <= 1e-6d)
+                {
+                    string excluded = net <= 1e-6d ? "，不进入分母" : "";
+                    NetNotes.Add(
+                        label + " 产量 " + FormatAmount(pair.Value) +
+                        "，不含居民的消耗 " + FormatAmount(used) +
+                        "，净产出 " + FormatAmount(net) + excluded);
+                }
+
+                if (net <= 1e-6d)
+                {
+                    continue;
+                }
+
+                FinalLines.Add(new Contributor
                 {
                     Key = pair.Key,
-                    Label = ResourceLabel(pair.Key),
+                    Label = label,
                     Count = 1,
-                    Amount = pair.Value
-                };
-                AnyLines.Add(line);
-                any += pair.Value;
-                if (!FactoryInputs.Contains(pair.Key))
-                {
-                    FinalLines.Add(line);
-                    finals += pair.Value;
-                }
+                    Amount = net
+                });
+                finals += net;
             }
 
-            denominatorFallback = finals <= 1e-6d;
-            return denominatorFallback ? any : finals;
+            return finals;
         }
 
         private static void EnsureWorkerTip(PrioritizationPanel panel)
@@ -595,135 +606,31 @@ namespace InfraSpaceProductionInsights
         private static int Rank(PrioritizationItem item)
         {
             Resource resource = ResourceOf(item);
-            if (IsFront(resource))
-            {
-                return 0;
-            }
-
-            if (DistrictBalance.IsRecipeFinal(resource))
+            if (DistrictBalance.IsStatFinal(resource))
             {
                 return 2;
+            }
+
+            if (IsRaw(resource))
+            {
+                return 0;
             }
 
             return 1;
         }
 
-        private static bool IsFront(Resource resource)
+        private static bool IsRaw(Resource resource)
         {
-            if (resource == null || string.IsNullOrEmpty(resource.name))
-            {
-                return false;
-            }
-
-            if (resource.name == "organicWaste")
-            {
-                return true;
-            }
-
-            EnsureMinerals();
-            return Minerals.Contains(resource.name);
-        }
-
-        private static void EnsureMinerals()
-        {
-            if (mineralsReady)
-            {
-                return;
-            }
-
-            mineralsReady = true;
-            ConstructionCategory mines = Old.GetGameUIModule()?.constructionCategories?.FindMainCategory("mines");
-            if (mines == null)
-            {
-                return;
-            }
-
-            List<string> items = mines.GetAllItems();
-            if (items == null)
-            {
-                return;
-            }
-
-            for (int i = 0; i < items.Count; i++)
-            {
-                BuildingDescription description = BuildingDescription.Get(items[i]);
-                if (!(description?.GetCachedProductionLogic() is FactoryProductionLogic factory) ||
-                    factory.productionDefinition?.producables == null)
-                {
-                    continue;
-                }
-
-                List<ResourceCost> products = factory.productionDefinition.producables;
-                for (int product = 0; product < products.Count; product++)
-                {
-                    Resource resource = products[product].resource;
-                    if (resource != null && !string.IsNullOrEmpty(resource.name))
-                    {
-                        Minerals.Add(resource.name);
-                    }
-                }
-            }
+            return resource != null &&
+                   !string.IsNullOrEmpty(resource.name) &&
+                   resource.name != "power" &&
+                   !DistrictBalance.HasProducer(resource);
         }
 
         private static void ClearChain()
         {
             ChainLines.Clear();
-            ChainIndex.Clear();
-            ProducersByResource.Clear();
-        }
-
-        private static void AddChain(string buildingName, double power)
-        {
-            if (string.IsNullOrEmpty(buildingName))
-            {
-                return;
-            }
-
-            if (ChainIndex.TryGetValue(buildingName, out int index))
-            {
-                Contributor existing = ChainLines[index];
-                existing.Count++;
-                existing.Amount += power;
-                ChainLines[index] = existing;
-                return;
-            }
-
-            ChainIndex[buildingName] = ChainLines.Count;
-            ChainLines.Add(new Contributor
-            {
-                Key = buildingName,
-                Label = buildingName,
-                Count = 1,
-                Amount = power,
-            });
-        }
-
-        private static void NoteProducer(string resourceName, string buildingName)
-        {
-            if (string.IsNullOrEmpty(resourceName) || string.IsNullOrEmpty(buildingName))
-            {
-                return;
-            }
-
-            if (!ProducersByResource.TryGetValue(resourceName, out Dictionary<string, int> counts))
-            {
-                counts = new Dictionary<string, int>();
-                ProducersByResource[resourceName] = counts;
-            }
-
-            counts.TryGetValue(buildingName, out int count);
-            counts[buildingName] = count + 1;
-        }
-
-        private static string BuildingLabel(Building building)
-        {
-            if (building == null)
-            {
-                return "";
-            }
-
-            string label = building.GetDescription()?.GetNameInGame();
-            return string.IsNullOrEmpty(label) ? building.buildingName : label;
+            NetNotes.Clear();
         }
 
         private static string ResourceLabel(string name)
@@ -776,14 +683,13 @@ namespace InfraSpaceProductionInsights
         private static void SetFigureTips(
             double workers,
             double power,
-            int buildings,
             double output,
             string workerResult,
             string powerResult,
-            string buildingResult)
+            string inputResult)
         {
-            string denominatorName = denominatorFallback ? "当前可见产量" : "最终产物产量";
-            List<Contributor> denominatorLines = denominatorFallback ? AnyLines : FinalLines;
+            string denominatorName = "最终产物净产出";
+            List<Contributor> denominatorLines = FinalLines;
             NameRank.Clear();
             for (int i = 0; i < ChainLines.Count; i++)
             {
@@ -811,7 +717,9 @@ namespace InfraSpaceProductionInsights
             WriteTip(
                 powerFigureTip,
                 "耗电",
-                "每生产 1 个最终产物消耗的电",
+                FinalProductToggle.IsArmed
+                    ? "每生产 1 个最终产物的规划用电，按配方和规划效率"
+                    : "每生产 1 个最终产物的原版电耗，含住宅用电",
                 power,
                 "电",
                 output,
@@ -824,22 +732,84 @@ namespace InfraSpaceProductionInsights
                 null,
                 false,
                 denominatorLines);
-            WriteTip(
-                buildingFigureTip,
-                "建筑",
-                "每生产 1 个最终产物占用的建筑",
-                buildings,
-                "座建筑",
-                output,
-                denominatorName,
-                buildingResult,
-                "分子里的建筑",
-                NameRank,
-                true,
-                null,
-                null,
-                false,
-                denominatorLines);
+            WriteInputTip(buildingFigureTip, output, denominatorName, inputResult, denominatorLines);
+        }
+
+        private static void WriteInputTip(
+            TooltipHoverable tip,
+            double output,
+            string denominatorName,
+            string result,
+            List<Contributor> denominatorLines)
+        {
+            if (tip == null)
+            {
+                return;
+            }
+
+            TipText.Clear();
+            TipText.Append("原料是本地区没有生产建筑的物品。\n");
+            TipText.Append(FinalProductToggle.IsArmed
+                ? "数量是规划消耗，不含居民消费。\n"
+                : "数量已去掉居民消费，磨损仍计入。\n");
+            TipText.Append("居民吃掉的最终产物不减少净产出。\n");
+            TipText.Append("每件 = 每分钟消耗 / ").Append(denominatorName).Append("。\n");
+            TipText.Append("结果：").Append(result).Append('\n');
+            TipText.Append("分母：").Append(denominatorName).Append(' ').Append(FormatAmount(output)).Append('\n');
+            Ranked.Clear();
+            foreach (KeyValuePair<string, double> pair in InputRates)
+            {
+                if (pair.Value <= 0d)
+                {
+                    continue;
+                }
+
+                Ranked.Add(new Contributor
+                {
+                    Key = pair.Key,
+                    Label = ResourceLabel(pair.Key),
+                    Amount = pair.Value,
+                });
+            }
+
+            Ranked.Sort(CompareAmount);
+            int shown = Ranked.Count < TipLineLimit ? Ranked.Count : TipLineLimit;
+            if (shown > 0)
+            {
+                TipText.Append('\n');
+            }
+
+            for (int i = 0; i < shown; i++)
+            {
+                Contributor line = Ranked[i];
+                double perItem = output > 1e-6d ? line.Amount / output : 0d;
+                TipText.Append(line.Label)
+                    .Append("  ")
+                    .Append(FormatAmount(line.Amount))
+                    .Append("/分钟  ")
+                    .Append(FormatAmount(perItem))
+                    .Append("/件\n");
+            }
+
+            if (Ranked.Count > shown)
+            {
+                TipText.Append("其余 ").Append(Ranked.Count - shown).Append(" 种\n");
+            }
+
+            if (NetNotes.Count > 0)
+            {
+                TipText.Append('\n').Append("净产出：").Append('\n');
+                for (int i = 0; i < NetNotes.Count; i++)
+                {
+                    TipText.Append(NetNotes[i]).Append('\n');
+                }
+            }
+
+            AppendGroup("分母里的产物", denominatorLines, false);
+            tip.titleCode = "";
+            tip.descriptionCode = "";
+            tip.Init("原料", TipText.ToString().TrimEnd());
+            RefreshOpenTip(tip);
         }
 
         private static void WriteTip(

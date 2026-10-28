@@ -46,31 +46,34 @@ namespace InfraSpaceProductionInsights
 
         private static void ApplyFinalProductDemand(PrioritizationItem item, byte district)
         {
-            if (district == 0 || !item.gameObject.activeSelf)
+            if (district == 0 || !FinalProductToggle.IsArmed || item == null)
             {
                 return;
             }
 
             Resource resource = ResourceOf(item);
-            if (!FinalProductDemand.TryGet(district, resource, out double demand))
+            if (!FinalProductDemand.TryPlan(district, resource, out double production, out double demand))
             {
                 return;
             }
 
-            item.consumptionText.text = demand.ToString("#,##0.0");
-            double production = Old.GetSimulator().market.GetProductionPerMinute(resource, district);
-            if (production < 0.75d * demand)
+            double wear = 0d;
+            if (DistrictBalance.IsMaintenance(resource))
             {
-                item.productionText.color = Dashboard.redTextColor;
+                DistrictBalance.Ensure(district);
+                wear = DistrictBalance.MaintenanceUse(resource);
             }
-            else if (production < 0.98d * demand)
+
+            demand += wear;
+            item.productionText.text = FormatRate(production);
+            item.consumptionText.text = FormatRate(demand);
+            if (production > 0d || demand > 0d)
             {
-                item.productionText.color = Dashboard.yellowTextColor;
+                item.gameObject.SetActive(true);
             }
-            else
-            {
-                item.productionText.color = new Color(1f, 1f, 1f, 1f);
-            }
+
+            string plan = demand > wear + 1e-6d ? DescribeDemand(resource, demand) : null;
+            ApplyConsumptionNote(item.consumptionText, district, resource, true, plan);
         }
 
         private static void ApplyDistrictBalance(PrioritizationItem item, byte district)
@@ -85,6 +88,11 @@ namespace InfraSpaceProductionInsights
                 if (item != null && district == 0)
                 {
                     ApplyGlobalMaintenance(item);
+                    if (!DistrictBalance.IsMaintenance(ResourceOf(item)))
+                    {
+                        SetUnderline(item.consumptionText, false);
+                    ClearColorTip(item.consumptionText);
+                    }
                 }
 
                 return;
@@ -120,24 +128,20 @@ namespace InfraSpaceProductionInsights
                 consumption = Old.GetSimulator().market.GetConsumptionPerSecond(resource, district);
             }
 
-            if (maintenance)
+            if (maintenance && !FinalProductToggle.IsArmed)
             {
                 consumption += DistrictBalance.MaintenanceUse(resource);
                 item.productionText.text = FormatRate(production);
                 item.consumptionText.text = FormatRate(consumption);
-                SetColorTip(item.consumptionText, "维护消耗", DescribeMaintenance(resource, district));
+                ApplyConsumptionNote(item.consumptionText, district, resource, false, null);
                 if (production > 0d || consumption > 0d)
                 {
                     item.gameObject.SetActive(true);
                 }
             }
-            else if (FinalProductToggle.IsArmed)
+            else if (!FinalProductToggle.IsArmed)
             {
-                SetColorTip(item.consumptionText, "倒推需求", DescribeDemand(resource, consumption));
-            }
-            else
-            {
-                ClearColorTip(item.consumptionText);
+                ApplyConsumptionNote(item.consumptionText, district, resource, false, null);
             }
 
             if (!item.gameObject.activeSelf)
@@ -145,7 +149,7 @@ namespace InfraSpaceProductionInsights
                 return;
             }
 
-            if (DistrictBalance.IsRecipeFinal(resource))
+            if (DistrictBalance.IsStatFinal(resource))
             {
                 item.productionText.color = FinalProductBlue;
                 SetColorTip(item.productionText, "最终产物", DescribeFinal(resource, production, consumption));
@@ -163,8 +167,7 @@ namespace InfraSpaceProductionInsights
             }
 
             ClearColorTip(item.productionText);
-
-            if (!maintenance)
+            if (!maintenance && !FinalProductToggle.IsArmed)
             {
                 return;
             }
@@ -200,6 +203,7 @@ namespace InfraSpaceProductionInsights
 
             consumption += DistrictBalance.MaintenanceUse(resource);
             item.consumptionText.text = FormatRate(consumption);
+            SetUnderline(item.consumptionText, DistrictBalance.MaintenanceUse(resource) > 1e-6d);
             SetColorTip(item.consumptionText, "维护消耗", DescribeMaintenance(resource, 0));
             if (!TryParse(item.productionText.text, out double production))
             {
@@ -236,30 +240,112 @@ namespace InfraSpaceProductionInsights
         private static string DescribeFinal(Resource resource, double production, double consumption)
         {
             return resource.GetNameInGame() + "\n" +
-                   "这个地区没有别的工厂配方把它当作原料。\n" +
-                   "同一条产线消耗自己产出的部分不算。\n" +
-                   "所以它是最终产物，产量固定为蓝色。\n\n" +
-                   "倒推从这些最终产物建筑的配方开始。\n" +
-                   "下一级要多少，就乘上配方里的原料数量。\n" +
-                   "中间建筑有几台、效率多少，都不改变这个比例。\n" +
-                   "缺工人或缺电只让产量变低，需求仍按配方算。\n" +
-                   "回收中心还没有，副产物不抵消上游需求。\n\n" +
-                   "其他行的消费是这条链拆出来的需求。\n" +
-                   "其他行的产量仍是这些建筑当前效率下的产量。\n" +
-                   "有机废料只记需求，不再往下拆配方。\n\n" +
+                   "这个地区没有别的工厂配方把它当作原料，\n" +
+                   "或者它是本区有生产建筑的机器人、高科、有机废料。\n" +
+                   "同一条产线消耗自己产出的部分不算被别的配方使用。\n" +
+                   "所以它是最终产物，产量为蓝色。\n\n" +
                    "产量：" + FormatRate(production) + "\n" +
                    "消费：" + FormatRate(consumption);
         }
 
         private static string DescribeDemand(Resource resource, double consumption)
         {
+            string mode = FinalProductToggle.StopAtNoProduction ? "无产原矿" : "原矿";
             return resource.GetNameInGame() + "\n" +
-                   "这是从最终产物按配方倒推的需求，\n" +
-                   "不是当前实际运进工厂的数量。\n\n" +
-                   "起点是最终产物建筑的配方产量。\n" +
-                   "再按每一级配方的原料比例往回乘。\n" +
-                   "中间设备的效率不参与。\n\n" +
-                   "本次需求：" + FormatRate(consumption);
+                   "规划模式（" + mode + "）按配方倒推的消耗。\n" +
+                   "有机废料停住，不再进入农场。\n" +
+                   "没有沼气发酵池时，天然气停住。\n\n" +
+                   "本次消耗：" + FormatRate(consumption);
+        }
+
+        private static void ApplyConsumptionNote(
+            TMP_Text text,
+            byte district,
+            Resource resource,
+            bool planning,
+            string planningBody)
+        {
+            if (text == null || resource == null)
+            {
+                return;
+            }
+
+            double wear = 0d;
+            if (DistrictBalance.IsMaintenance(resource))
+            {
+                DistrictBalance.Ensure(district);
+                wear = DistrictBalance.MaintenanceUse(resource);
+            }
+
+            double habitat = 0d;
+            if (!planning && district != 0)
+            {
+                habitat = ProductionSnapshots.HabitatUse(district, resource.name);
+            }
+
+            SetUnderline(text, wear > 1e-6d || habitat > 1e-6d);
+            if (wear <= 1e-6d && habitat <= 1e-6d && string.IsNullOrEmpty(planningBody))
+            {
+                ClearColorTip(text);
+                return;
+            }
+
+            string body = "";
+            string title = "消费";
+            if (wear > 1e-6d)
+            {
+                title = "维护消耗";
+                body = DescribeMaintenance(resource, district);
+            }
+
+            if (habitat > 1e-6d)
+            {
+                if (body.Length > 0)
+                {
+                    body += "\n\n";
+                    title = "消费";
+                }
+                else
+                {
+                    title = "居民消费";
+                }
+
+                body += "其中居民消耗 " + FormatRate(habitat) + "。\n" +
+                        "效率的净产出和原料不扣这笔。";
+            }
+
+            if (!string.IsNullOrEmpty(planningBody))
+            {
+                if (body.Length > 0)
+                {
+                    body += "\n\n";
+                }
+
+                body += planningBody;
+                if (wear <= 1e-6d && habitat <= 1e-6d)
+                {
+                    title = "规划消耗";
+                }
+            }
+
+            SetColorTip(text, title, body);
+        }
+
+        private static void SetUnderline(TMP_Text text, bool enabled)
+        {
+            if (text == null)
+            {
+                return;
+            }
+
+            if (enabled)
+            {
+                text.fontStyle |= FontStyles.Underline;
+            }
+            else
+            {
+                text.fontStyle &= ~FontStyles.Underline;
+            }
         }
 
         private static string DescribeSurplus(Resource resource, double production, double consumption, double oneBuilding)

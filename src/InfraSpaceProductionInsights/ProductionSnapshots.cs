@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace InfraSpaceProductionInsights
 {
@@ -10,16 +11,58 @@ namespace InfraSpaceProductionInsights
 
         private static readonly Dictionary<string, RecipePick> Recipes = new Dictionary<string, RecipePick>();
 
+        private static readonly Dictionary<string, double> HabitatUses = new Dictionary<string, double>();
+
+        private static int habitatFrame = -1;
+
+        private static byte habitatDistrict;
+
+        private static double lastPowerOutput;
+
         private static bool recipesReady;
 
-        // 有机废料按原矿输入。需要多少就记多少，不沿产出它的农场或厨房配方再往下推。
-        internal static bool IsRawInput(Resource resource)
+        internal static double LastPowerOutput
         {
-            return resource != null && resource.name == "organicWaste";
+            get { return lastPowerOutput; }
         }
 
-        internal static List<DemandPull.Node<Resource>> NominalNodes(byte district)
+        internal static double HabitatUse(byte district, string resourceName)
         {
+            EnsureHabitat(district);
+            if (string.IsNullOrEmpty(resourceName) || !HabitatUses.TryGetValue(resourceName, out double amount))
+            {
+                return 0d;
+            }
+
+            return amount;
+        }
+
+        internal static bool IsPlanningRaw(byte district, Resource resource, bool stopAtNoProduction)
+        {
+            if (resource == null || resource.name == "power" || resource.name == "organicWaste")
+            {
+                return true;
+            }
+
+            DistrictBalance.Ensure(district);
+            if (resource.name == "methane" && !DistrictBalance.HasFermenter(district))
+            {
+                return true;
+            }
+
+            bool produced = DistrictBalance.HasProducer(resource);
+            if ((resource.name == "industrialRobot" || resource.name == "highTechTool") && !produced)
+            {
+                return true;
+            }
+
+            return stopAtNoProduction && !produced;
+        }
+
+        internal static List<DemandPull.Node<Resource>> NominalNodes(byte district, bool includeHighTech, out double power)
+        {
+            power = 0d;
+            lastPowerOutput = 0d;
             var nodes = new List<DemandPull.Node<Resource>>();
             IEnumerable<Building> buildings = WorldScripts.Inst?.registry?.builtBuildings;
             if (buildings == null)
@@ -42,7 +85,17 @@ namespace InfraSpaceProductionInsights
                 }
 
                 int timeSteps = factory.productionDefinition.timeSteps;
-                int speed = EquippedSpeed(factory);
+                int speed = EquippedSpeed(factory, includeHighTech);
+                if (factory.productionDefinition.powerNeeded > 0f && speed > 0)
+                {
+                    power += factory.productionDefinition.powerNeeded * speed / 1000d;
+                }
+
+                if (factory.productionDefinition.powerOutput > 0f && speed > 0)
+                {
+                    lastPowerOutput += factory.productionDefinition.powerOutput * speed / 1000d;
+                }
+
                 var node = new DemandPull.Node<Resource>();
                 AddCosts(node.Inputs, factory.productionDefinition.consumables, timeSteps, speed);
                 AddCosts(node.Outputs, factory.productionDefinition.producables, timeSteps, speed);
@@ -200,7 +253,66 @@ namespace InfraSpaceProductionInsights
         }
 
         // 满员配方加上已安装的产率加成。不看当前工人、电力或中间设备效率。
-        private static int EquippedSpeed(FactoryProductionLogic factory)
+        private static void EnsureHabitat(byte district)
+        {
+            if (habitatFrame == Time.frameCount && habitatDistrict == district)
+            {
+                return;
+            }
+
+            habitatFrame = Time.frameCount;
+            habitatDistrict = district;
+            HabitatUses.Clear();
+            IEnumerable<Building> buildings = WorldScripts.Inst?.registry?.builtBuildings;
+            if (buildings == null)
+            {
+                return;
+            }
+
+            foreach (Building building in buildings)
+            {
+                if (!ProducerCounts.InDistrict(building, district) || !building.IsValidAndBuilt())
+                {
+                    continue;
+                }
+
+                if (!(building.consumerProducer?.productionLogic is Habitat habitat))
+                {
+                    continue;
+                }
+
+                AddHabitat(habitat.currentRequiredResources, habitat);
+                AddHabitat(habitat.nextRequiredResources, habitat);
+            }
+        }
+
+        private static void AddHabitat(List<HabitatResourceInfo> resources, Habitat habitat)
+        {
+            if (resources == null || habitat?.storage == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < resources.Count; i++)
+            {
+                HabitatResourceInfo info = resources[i];
+                if (info?.resource == null || info.consumptionFactor <= 0d || !habitat.storage.ContainsKey(info.resource))
+                {
+                    continue;
+                }
+
+                double perMinute = habitat.GetConsumptionPerMinute(info);
+                if (perMinute <= 0d || string.IsNullOrEmpty(info.resource.name))
+                {
+                    continue;
+                }
+
+                HabitatUses.TryGetValue(info.resource.name, out double current);
+                HabitatUses[info.resource.name] = current + perMinute;
+            }
+        }
+
+        private static int EquippedSpeed(FactoryProductionLogic factory, bool includeHighTech)
         {
             Building building = factory.consumerProducer.building;
             float wind = 1f;
@@ -239,6 +351,11 @@ namespace InfraSpaceProductionInsights
                 {
                     BuildingUpgrade upgrade = installed[i];
                     if (upgrade == null)
+                    {
+                        continue;
+                    }
+
+                    if (!includeHighTech && upgrade.upgradeType == BuildingUpgrade.highTechTools)
                     {
                         continue;
                     }

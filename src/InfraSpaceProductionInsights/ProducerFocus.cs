@@ -8,7 +8,8 @@ namespace InfraSpaceProductionInsights
 {
     internal static class ProducerFocus
     {
-        private const string Tip = "单击：用绿色标出生产该物品的建筑\n双击：用蓝色标出需要该物品的建筑";
+        private const string Tip =
+            "单击：用绿色标出生产该物品的建筑\n双击：用蓝色标出需要该物品的建筑\n右键或 Esc：退出";
 
         private static readonly Color SupplyColor = new Color(0.22f, 0.86f, 0.38f, 1f);
         private static readonly Color DemandColor = new Color(0.25f, 0.55f, 1f, 1f);
@@ -21,6 +22,12 @@ namespace InfraSpaceProductionInsights
 
         private static readonly List<ProducerFocusButton> Hooked = new List<ProducerFocusButton>();
 
+        private static readonly Dictionary<int, Sprite> GrayIcons = new Dictionary<int, Sprite>();
+
+        private static readonly HashSet<int> GrayIds = new HashSet<int>();
+
+        private static readonly FocusExit ExitHook = new FocusExit();
+
         private static Resource selected;
         private static bool demand;
         private static PrioritizationItem pending;
@@ -30,6 +37,7 @@ namespace InfraSpaceProductionInsights
         private static VisualizationPanel hookedVisualization;
         private static int hookedChildren = -1;
         private static int paintedFrame = -1;
+        private static bool escapeRegistered;
 
         internal static void Tick()
         {
@@ -53,8 +61,10 @@ namespace InfraSpaceProductionInsights
 
         internal static void Clear()
         {
+            UnregisterEscape();
             if (selected == null)
             {
+                pending = null;
                 return;
             }
 
@@ -198,6 +208,7 @@ namespace InfraSpaceProductionInsights
                 ProducerFocusButton hook = item.icon.gameObject.AddComponent<ProducerFocusButton>();
                 hook.Item = item;
                 hook.OriginalIconColor = item.icon.color;
+                hook.OriginalSprite = item.icon.sprite;
                 EnsureTip(item);
                 Hooked.Add(hook);
             }
@@ -255,6 +266,7 @@ namespace InfraSpaceProductionInsights
             ProducerList.Dismiss();
             selected = resource;
             demand = showDemand;
+            RegisterEscape();
             Paint();
             WorldScripts.Inst?.visualizationManager?.MarkDirty();
         }
@@ -299,12 +311,39 @@ namespace InfraSpaceProductionInsights
                 Image icon = hook.Item.icon;
                 EnsureTip(hook.Item);
                 bool chosen = selected != null && Same(ResourceOf(hook.Item), selected);
-                Color color = selected == null || chosen
-                    ? hook.OriginalIconColor
-                    : hook.OriginalIconColor * new Color(0.4f, 0.4f, 0.4f, 1f);
-                if (icon.color != color)
+                if (selected == null || chosen)
                 {
-                    icon.color = color;
+                    if (hook.OriginalSprite != null && icon.sprite != hook.OriginalSprite)
+                    {
+                        icon.sprite = hook.OriginalSprite;
+                    }
+
+                    if (icon.color != hook.OriginalIconColor)
+                    {
+                        icon.color = hook.OriginalIconColor;
+                    }
+                }
+                else
+                {
+                    if (icon.sprite != null && !IsGrayIcon(icon.sprite))
+                    {
+                        hook.OriginalSprite = icon.sprite;
+                    }
+
+                    if (hook.OriginalSprite != null && !IsGrayIcon(hook.OriginalSprite))
+                    {
+                        Sprite gray = GrayIcon(hook.OriginalSprite);
+                        if (gray != null && icon.sprite != gray)
+                        {
+                            icon.sprite = gray;
+                        }
+
+                        Color flat = new Color(1f, 1f, 1f, hook.OriginalIconColor.a);
+                        if (icon.color != flat)
+                        {
+                            icon.color = flat;
+                        }
+                    }
                 }
 
                 Vector3 scale = chosen ? new Vector3(1.12f, 1.12f, 1f) : Vector3.one;
@@ -312,6 +351,106 @@ namespace InfraSpaceProductionInsights
                 {
                     icon.rectTransform.localScale = scale;
                 }
+            }
+        }
+
+        private static void RegisterEscape()
+        {
+            if (escapeRegistered)
+            {
+                return;
+            }
+
+            EscapeHandler handler = DionicGame.GetEscapeHandler();
+            if (handler == null)
+            {
+                return;
+            }
+
+            handler.AddEscapable(ExitHook);
+            escapeRegistered = true;
+        }
+
+        private static void UnregisterEscape()
+        {
+            if (!escapeRegistered)
+            {
+                return;
+            }
+
+            DionicGame.GetEscapeHandler()?.RemoveEscapable(ExitHook);
+            escapeRegistered = false;
+        }
+
+        private static bool IsGrayIcon(Sprite sprite)
+        {
+            return sprite != null && GrayIds.Contains(sprite.GetInstanceID());
+        }
+
+        private static Sprite GrayIcon(Sprite source)
+        {
+            if (source == null || source.texture == null)
+            {
+                return source;
+            }
+
+            int id = source.GetInstanceID();
+            if (GrayIcons.TryGetValue(id, out Sprite cached) && cached != null)
+            {
+                return cached;
+            }
+
+            Rect rect = source.textureRect;
+            int width = Mathf.Max(1, Mathf.RoundToInt(rect.width));
+            int height = Mathf.Max(1, Mathf.RoundToInt(rect.height));
+            RenderTexture target = RenderTexture.GetTemporary(source.texture.width, source.texture.height, 0, RenderTextureFormat.ARGB32);
+            RenderTexture previous = RenderTexture.active;
+            Texture2D copy = null;
+            try
+            {
+                Graphics.Blit(source.texture, target);
+                RenderTexture.active = target;
+                copy = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                copy.hideFlags = HideFlags.HideAndDontSave;
+                copy.ReadPixels(new Rect(rect.x, rect.y, width, height), 0, 0);
+                Color32[] pixels = copy.GetPixels32();
+                for (int i = 0; i < pixels.Length; i++)
+                {
+                    Color32 pixel = pixels[i];
+                    byte gray = (byte)(pixel.r * 0.299f + pixel.g * 0.587f + pixel.b * 0.114f);
+                    pixels[i] = new Color32(gray, gray, gray, pixel.a);
+                }
+
+                copy.SetPixels32(pixels);
+                copy.Apply(false, true);
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(target);
+            }
+
+            if (copy == null)
+            {
+                return source;
+            }
+
+            Vector2 pivot = new Vector2(
+                rect.width <= 0f ? 0.5f : source.pivot.x / rect.width,
+                rect.height <= 0f ? 0.5f : source.pivot.y / rect.height);
+            Sprite graySprite = Sprite.Create(copy, new Rect(0f, 0f, width, height), pivot, source.pixelsPerUnit);
+            graySprite.hideFlags = HideFlags.HideAndDontSave;
+            GrayIcons[id] = graySprite;
+            GrayIds.Add(graySprite.GetInstanceID());
+            return graySprite;
+        }
+
+        private sealed class FocusExit : IEscapable
+        {
+            public bool Escape()
+            {
+                Clear();
+                return true;
             }
         }
 
@@ -341,6 +480,7 @@ namespace InfraSpaceProductionInsights
         {
             internal PrioritizationItem Item;
             internal Color OriginalIconColor = Color.white;
+            internal Sprite OriginalSprite;
 
             public void OnPointerClick(PointerEventData eventData)
             {
