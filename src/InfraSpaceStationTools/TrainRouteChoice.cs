@@ -72,6 +72,15 @@ namespace InfraSpaceStationTools
                 return candidates[0];
             }
 
+            if (railsByStation.Count > 1)
+            {
+                Rail byRoute = ChooseByNextStation(candidates, railsByStation[1]);
+                if (byRoute != null)
+                {
+                    return byRoute;
+                }
+            }
+
             Building first = line.trainStations[0];
             Building second = line.trainStations[1];
             if (first == null || second == null)
@@ -133,6 +142,79 @@ namespace InfraSpaceStationTools
             }
 
             return Helper.GetRandom(groups[forward]);
+        }
+
+        private static Rail ChooseByNextStation(List<Rail> candidates, List<Rail> nextStationRails)
+        {
+            if (nextStationRails == null || nextStationRails.Count == 0 || WorldScripts.Inst?.railPathfinder == null)
+            {
+                return null;
+            }
+
+            int best = int.MaxValue;
+            int[] distances = new int[candidates.Count];
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                distances[i] = DistanceTo(candidates[i], nextStationRails);
+                if (distances[i] < best)
+                {
+                    best = distances[i];
+                }
+            }
+
+            if (best == int.MaxValue)
+            {
+                return null;
+            }
+
+            int limit = best + Math.Max(8, best / 10);
+            List<Rail> matched = new List<Rail>();
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (candidates[i] != null && distances[i] <= limit)
+                {
+                    matched.Add(candidates[i]);
+                }
+            }
+
+            if (matched.Count == 0)
+            {
+                return null;
+            }
+
+            return Helper.GetRandom(matched);
+        }
+
+        private static int DistanceTo(Rail start, List<Rail> goals)
+        {
+            if (start == null)
+            {
+                return int.MaxValue;
+            }
+
+            int best = int.MaxValue;
+            for (int i = 0; i < goals.Count; i++)
+            {
+                Rail goal = goals[i];
+                if (goal == null || goal == start)
+                {
+                    continue;
+                }
+
+                List<Rail> path = WorldScripts.Inst.railPathfinder.GetPath(start, goal);
+                if (path == null)
+                {
+                    continue;
+                }
+
+                int distance = RailPathfinder.GetPathDist(path);
+                if (distance < best)
+                {
+                    best = distance;
+                }
+            }
+
+            return best;
         }
 
         private static Rail DepartureRail(Rail spawn, Building station)
