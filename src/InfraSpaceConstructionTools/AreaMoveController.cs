@@ -107,7 +107,7 @@ namespace InfraSpaceConstructionTools
 
         public bool IsCameraRotationBlocked()
         {
-            return state == MoveState.Preview && batchKind == BatchKind.Copy;
+            return state == MoveState.Preview;
         }
 
         public bool IsSelected(Building building)
@@ -415,7 +415,7 @@ namespace InfraSpaceConstructionTools
                 }
                 else
                 {
-                    hint = $"{title}：{selected.Count} 个建筑，{roadNodes} 个路段    |    左键确认    |    按住 Shift 微调    |    右键或 Esc 取消";
+                    hint = $"{title}：{selected.Count} 个建筑，{roadNodes} 个路段    |    左键确认    |    {RotateHint()}    |    按住 Shift 微调    |    右键或 Esc 取消";
                 }
             }
             else if (batchKind != BatchKind.None &&

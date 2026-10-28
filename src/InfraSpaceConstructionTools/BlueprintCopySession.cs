@@ -63,6 +63,8 @@ namespace InfraSpaceConstructionTools
 
         internal Vector3 LastDelta { get; private set; }
 
+        internal bool HasRotation => quarterTurns != 0;
+
         public bool IsPreviewValid { get; private set; }
 
         public int RoadNodeCount => ghostEdges.Count;
@@ -145,6 +147,11 @@ namespace InfraSpaceConstructionTools
             IsPreviewValid =
                 ValidatePreview() &&
                 (!checkBuildCosts || BatchPlacement.CanPay(GetTotalCosts()));
+        }
+
+        internal Vector3 GetTransformedPosition(Vector3 originalWorld)
+        {
+            return TransformPoint(originalWorld, LastDelta);
         }
 
         private Vector3 GetDelta(Vector3 current)

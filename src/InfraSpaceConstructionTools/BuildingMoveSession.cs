@@ -45,7 +45,7 @@ namespace InfraSpaceConstructionTools
                 sourceBuildings,
                 roadPieces,
                 anchor,
-                allowRotation: false,
+                allowRotation: true,
                 checkBuildCosts: false,
                 ignoredBuildings: sourceBuildings,
                 validateRoads: true,
@@ -69,7 +69,7 @@ namespace InfraSpaceConstructionTools
             lastDelta = previewSession.LastDelta;
             foreach (Snapshot snapshot in snapshots)
             {
-                snapshot.TargetPosition = snapshot.Position + lastDelta;
+                snapshot.TargetPosition = previewSession.GetTransformedPosition(snapshot.Position);
             }
 
             SetSourcesVisible(false);
@@ -85,7 +85,7 @@ namespace InfraSpaceConstructionTools
                 return BatchCommitResult.Invalid;
             }
 
-            if (lastDelta.sqrMagnitude <= 0.000001f)
+            if (lastDelta.sqrMagnitude <= 0.000001f && !previewSession.HasRotation)
             {
                 Cancel();
                 return BatchCommitResult.Success;
