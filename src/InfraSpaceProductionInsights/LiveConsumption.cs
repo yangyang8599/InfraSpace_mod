@@ -100,12 +100,20 @@ namespace InfraSpaceProductionInsights
             }
 
             Hook(panel.consumptionTitleIcon, false, ref consumptionIcon, ref consumptionColor, ref consumptionColorReady);
+            if (BelongsToToggle(productionIcon))
+            {
+                Release(ref productionIcon, productionColor, productionColorReady);
+                productionColorReady = false;
+                productionSearched = false;
+            }
+
             if (!productionSearched || productionIcon == null)
             {
-                productionSearched = productionIcon != null;
                 Hook(FindProductionIcon(panel), true, ref productionIcon, ref productionColor, ref productionColorReady);
                 productionSearched = productionIcon != null;
             }
+
+            StopTooltipBlockingClicks();
 
             byte district = panel.gameObject.activeInHierarchy ? DistrictOf(panel) : (byte)0;
             Tick(panel, district);
@@ -268,7 +276,9 @@ namespace InfraSpaceProductionInsights
                 PrioritizationItem[] items = panel.prioItemParent.GetComponentsInChildren<PrioritizationItem>(true);
                 for (int i = 0; i < items.Length; i++)
                 {
-                    if (items[i]?.productionText == null)
+                    if (items[i] == null ||
+                        !items[i].gameObject.activeInHierarchy ||
+                        items[i].productionText == null)
                     {
                         continue;
                     }
@@ -303,7 +313,7 @@ namespace InfraSpaceProductionInsights
                     continue;
                 }
 
-                if (rect.GetComponentInParent<PrioritizationItem>() != null)
+                if (rect.GetComponentInParent<PrioritizationItem>() != null || BelongsToToggle(rect))
                 {
                     continue;
                 }
@@ -330,6 +340,61 @@ namespace InfraSpaceProductionInsights
 
             return best;
         }
+
+        private static bool BelongsToToggle(Transform target)
+        {
+            return target != null && target.GetComponentInParent<Toggle>() != null;
+        }
+
+        private static void Release(ref RectTransform hooked, Color color, bool colorReady)
+        {
+            if (hooked == null)
+            {
+                return;
+            }
+
+            Image image = hooked.GetComponent<Image>();
+            if (image == null)
+            {
+                image = hooked.GetComponentInChildren<Image>(true);
+            }
+
+            if (image != null && colorReady)
+            {
+                image.color = color;
+            }
+
+            GameObject target = image != null ? image.gameObject : hooked.gameObject;
+            LiveRateButton button = target.GetComponent<LiveRateButton>();
+            if (button != null)
+            {
+                Object.Destroy(button);
+            }
+
+            hooked = null;
+        }
+
+        private static void StopTooltipBlockingClicks()
+        {
+            Tooltip tooltip = WorldScripts.Inst?.tooltipManager?.tooltipPanel;
+            if (tooltip == null || tooltip == clearedTooltip)
+            {
+                return;
+            }
+
+            Graphic[] graphics = tooltip.GetComponentsInChildren<Graphic>(true);
+            for (int i = 0; i < graphics.Length; i++)
+            {
+                if (graphics[i] != null)
+                {
+                    graphics[i].raycastTarget = false;
+                }
+            }
+
+            clearedTooltip = tooltip;
+        }
+
+        private static Tooltip clearedTooltip;
 
         private static bool IsUnder(Transform child, Transform parent)
         {
