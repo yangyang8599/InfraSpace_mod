@@ -17,6 +17,7 @@
 - 旧版四个 Mod 的存档只通过 `tools/migrate_save_identities.py` 迁移到新副本；迁移后必须执行“载入 → 另存 → 完全重启 → 重载”验证。
 - `research/` 只作证据和实验，不得被发布项目编译。
 - 修改 Harmony patch 后至少构建整个解决方案；涉及存档状态时还要列出游戏内验证步骤。
+- 物流 Mod 改完后直接运行 `src/InfraSpaceMultiResourceLogistics/Install.ps1` 覆盖安装目录。游戏由用户自己重启加载；文件被占用导致覆盖失败时再说明。
 
 ## 文件操作
 

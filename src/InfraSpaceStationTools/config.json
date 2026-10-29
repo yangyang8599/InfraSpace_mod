@@ -1,7 +1,7 @@
 {
   "name": "InfraSpaceStationTools",
   "author": "yangy",
-  "description": "Configure station rail and road ports, mirror station connections, and choose train departure direction.",
+  "description": "Set each station's rail and road port direction, start trains toward the next stop, reorder a line by dragging, and see where cargo came from and where it is going. Report issues at https://github.com/yangyang8599/InfraSpace_mod/issues.",
   "version": "1.0.0",
-  "url": ""
+  "url": "https://github.com/yangyang8599/InfraSpace_mod"
 }

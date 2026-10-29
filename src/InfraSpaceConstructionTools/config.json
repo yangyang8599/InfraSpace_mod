@@ -1,7 +1,7 @@
 {
   "name": "InfraSpaceConstructionTools",
   "author": "yangy",
-  "description": "Batch-move and copy buildings and networks, toggle road snapping, and upgrade connected rail chains.",
+  "description": "Move or copy a group of buildings and roads, rotate the preview, toggle road snapping, extend roads in a straight line, see which neighbors boost each other's output, and upgrade a connected railway at once. Report issues at https://github.com/yangyang8599/InfraSpace_mod/issues.",
   "version": "1.0.0",
-  "url": ""
+  "url": "https://github.com/yangyang8599/InfraSpace_mod"
 }

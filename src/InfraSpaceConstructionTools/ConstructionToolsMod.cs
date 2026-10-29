@@ -19,6 +19,8 @@ namespace InfraSpaceConstructionTools
 
         public bool suppressRoadMagnet;
 
+        public bool straightExtend;
+
         public override void Load()
         {
             Instance = this;
@@ -39,6 +41,7 @@ namespace InfraSpaceConstructionTools
         public override void FrameUpdate()
         {
             RoadSnapFeature.Tick();
+            StraightExtendFeature.Tick();
             if (WorldScripts.Inst == null || WorldScripts.Inst.clickHandler == null)
             {
                 return;

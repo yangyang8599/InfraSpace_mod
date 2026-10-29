@@ -66,6 +66,7 @@ namespace InfraSpaceMultiResourceLogistics
         public override void FrameUpdate()
         {
             NativeCenterPanelController.ProcessPendingReopen();
+            CenterHoverTip.Ensure();
         }
 
         public override void SimulationUdpate()

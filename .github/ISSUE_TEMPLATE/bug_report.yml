@@ -1,0 +1,56 @@
+name: 问题反馈
+description: 某个模组表现不对、存档打不开，或有改进建议。中文或英文都可以。
+title: "[模组] "
+body:
+  - type: dropdown
+    id: mod
+    attributes:
+      label: 哪个模组
+      description: Which mod
+      options:
+        - 建造工具 Construction Tools
+        - 生产分析 Production Insights
+        - 多物资物流 Multi-Resource Logistics
+        - 车站工具 Station Tools
+        - 不确定 / Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 发生了什么
+      description: What happened. 写清你做了哪一步。
+      placeholder: 例如：按 J 延长道路时，新路没有沿原来的方向走。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 你期望怎样
+      description: What you expected instead.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: 游戏版本和模组版本
+      description: InfraSpace version and the mod version from config.json.
+      placeholder: InfraSpace 1.x，模组 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: other-mods
+    attributes:
+      label: 是否同时启用了另外三个模组
+      options:
+        - 只启用了出问题的这一个
+        - 四个都启用了
+        - 启用了其中几个
+        - 没注意
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: 补充
+      description: 可以写下存档是否在启用模组之后保存过。不要附上整份存档，除非后面还需要它才能判断。

@@ -49,7 +49,7 @@ InfraSpace 会序列化全部 Mod 入口，不仅是包含业务字段的 Mod。
 
 | 产品名称 | 稳定程序集/config | 序列化入口类型 | 主要持久字段 |
 | --- | --- | --- | --- |
-| `InfraSpaceConstructionTools` | `InfraSpaceConstructionTools` | `InfraSpaceConstructionTools.ConstructionToolsMod` | `suppressRoadMagnet` |
+| `InfraSpaceConstructionTools` | `InfraSpaceConstructionTools` | `InfraSpaceConstructionTools.ConstructionToolsMod` | `suppressRoadMagnet`、`straightExtend` |
 | `InfraSpaceProductionInsights` | `InfraSpaceProductionInsights` | `InfraSpaceProductionInsights.ProductionInsightsMod` | 无业务字段 |
 | `InfraSpaceMultiResourceLogistics` | `InfraSpaceMultiResourceLogistics` | `InfraSpaceMultiResourceLogistics.MultiResourceLogisticsMod` | `centers`，以及迁移期车站字典 |
 | `InfraSpaceStationTools` | `InfraSpaceStationTools` | `InfraSpaceStationTools.StationToolsMod` | 三个车站端口字典 |

@@ -40,6 +40,14 @@ dotnet build .\InfraSpaceMods.sln -c Release
 
 “Mod 语义依赖”表示存档通常仍可打开，但卸载后自定义设置或模拟行为会丢失或降级。详细定义见 `docs/COMPATIBILITY.md`。
 
+## 反馈
+
+四个 Mod 的源码在 <https://github.com/yangyang8599/InfraSpace_mod>。玩的时候遇到问题，请打开 [Issues](https://github.com/yangyang8599/InfraSpace_mod/issues)，写明是哪一个模组、游戏版本，以及怎样重现。
+
+## 发布到创意工坊
+
+玩家可见的短说明写在各 Mod 的 `config.json`。创意工坊长文案、预览图和截图清单见 `docs/WORKSHOP.md`。上传在游戏内完成，不从本仓库直接发布。
+
 ## 发布约束
 
 - 每个 `src/` 子项目独立构建、安装和版本管理。

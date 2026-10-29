@@ -58,6 +58,11 @@ namespace InfraSpaceMultiResourceLogistics
 
             EnsureConsumables(center.consumerProducer, CenterState.GetResources(center));
             ForwardToDistributionCenters(center, MaxDeparturesPerUpdate);
+            CenterHeadWarnings.Observe(
+                center.consumerProducer,
+                CenterState.GetResources(center),
+                center.connectedDistributionCenters,
+                true);
         }
 
         internal static void UpdateDistribution(DistributionProductionLogic center)
@@ -69,6 +74,11 @@ namespace InfraSpaceMultiResourceLogistics
 
             // 读档重连发生在路网重建期间。那里寻路会和路网后处理互相等待，所以改到模拟跑起来后再查。
             AdvanceDistributionReach(center);
+            CenterHeadWarnings.Observe(
+                center.consumerProducer,
+                CenterState.GetResources(center),
+                center.connectedCollectionCenters,
+                false);
             if ((Old.GetSimulator().GetSimulationFrame() + center.consumerProducer.building.GetID()) % 20 != 0L)
             {
                 return;
@@ -76,6 +86,11 @@ namespace InfraSpaceMultiResourceLogistics
 
             EnsureConsumables(center.consumerProducer, CenterState.GetResources(center));
             SendFromDistribution(center);
+            CenterHeadWarnings.Observe(
+                center.consumerProducer,
+                CenterState.GetResources(center),
+                center.connectedCollectionCenters,
+                false);
         }
 
         [ThreadStatic]
@@ -875,6 +890,25 @@ namespace InfraSpaceMultiResourceLogistics
                        PathFinder.GetLastUpdateFrame(),
                        out bool reachable) &&
                    !reachable;
+        }
+
+        internal static bool TryGetTruckRoad(Building source, Building destination, out bool reachable)
+        {
+            if (source == null || destination == null)
+            {
+                reachable = false;
+                return false;
+            }
+
+            return TryReadRoad(
+                new CenterLink(source.GetID(), destination.GetID()),
+                PathFinder.GetLastUpdateFrame(),
+                out reachable);
+        }
+
+        internal static bool TruckRouteBlocked(Building source, Building destination)
+        {
+            return IsPairBlocked(source, destination);
         }
 
         private static bool IsPairBlocked(Building source, Building destination)

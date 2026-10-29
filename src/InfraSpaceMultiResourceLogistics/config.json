@@ -1,7 +1,7 @@
 {
   "name": "InfraSpaceMultiResourceLogistics",
   "author": "yangy",
-  "description": "Multi-resource collection and distribution centers with independent capacities and demand-aware dispatch.",
+  "description": "Let collection and distribution centers handle several resources at once, each with its own stock, capacity, and radius, and warn when a truck cannot reach its partner. Report issues at https://github.com/yangyang8599/InfraSpace_mod/issues.",
   "version": "1.0.0",
-  "url": ""
+  "url": "https://github.com/yangyang8599/InfraSpace_mod"
 }

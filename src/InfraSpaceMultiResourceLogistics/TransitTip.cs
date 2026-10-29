@@ -63,6 +63,36 @@ namespace InfraSpaceMultiResourceLogistics
             return FormatSide("派送", flow.OutgoingTotal, flow.Outgoing);
         }
 
+        internal static void AppendAligned(StringBuilder text, Building building, Resource resource)
+        {
+            if (building == null || resource == null)
+            {
+                return;
+            }
+
+            Flow flow = CollectOne(building, resource);
+            text.Append(resource.GetNameInGame());
+            if (flow.IncomingTotal <= 0 && flow.OutgoingTotal <= 0)
+            {
+                text.Append("\n当前没有在途货车");
+                return;
+            }
+
+            if (flow.IncomingTotal > 0)
+            {
+                text.Append("\n送货\t");
+                text.Append(flow.IncomingTotal);
+                AppendAlignedLines(text, flow.Incoming);
+            }
+
+            if (flow.OutgoingTotal > 0)
+            {
+                text.Append("\n派送\t");
+                text.Append(flow.OutgoingTotal);
+                AppendAlignedLines(text, flow.Outgoing);
+            }
+        }
+
         internal static string BuildingName(Building building)
         {
             return BuildingLabel(building);
@@ -192,6 +222,32 @@ namespace InfraSpaceMultiResourceLogistics
             if (lines.Count > shown)
             {
                 text.Append("\n  还有 ");
+                text.Append(lines.Count - shown);
+                text.Append(" 处");
+            }
+        }
+
+        private static void AppendAlignedLines(StringBuilder text, Dictionary<string, int> amounts)
+        {
+            List<AmountLine> lines = new List<AmountLine>(amounts.Count);
+            foreach (KeyValuePair<string, int> entry in amounts)
+            {
+                lines.Add(new AmountLine { Name = entry.Key, Amount = entry.Value });
+            }
+
+            lines.Sort((left, right) => right.Amount.CompareTo(left.Amount));
+            int shown = lines.Count < MaxLines ? lines.Count : MaxLines;
+            for (int i = 0; i < shown; i++)
+            {
+                text.Append("\n  ");
+                text.Append(lines[i].Name);
+                text.Append('\t');
+                text.Append(lines[i].Amount);
+            }
+
+            if (lines.Count > shown)
+            {
+                text.Append("\n  还有\t");
                 text.Append(lines.Count - shown);
                 text.Append(" 处");
             }

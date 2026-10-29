@@ -45,9 +45,14 @@ namespace InfraSpaceMultiResourceLogistics
         private Sprite sliderBackgroundSprite;
         private Sprite sliderFillSprite;
         private Sprite sliderHandleSprite;
+        private RectTransform sliderTrackRect;
+        private RectTransform sliderHandleRect;
         private Color sliderBackgroundColor = Color.white;
         private Color sliderFillColor = Color.white;
         private Color sliderHandleColor = Color.white;
+        private readonly Dictionary<int, Sprite> entryBackgrounds = new Dictionary<int, Sprite>();
+        private readonly Dictionary<int, Color> entryBackgroundColors = new Dictionary<int, Color>();
+        private static Sprite unreachableRowSprite;
         private TMP_Text capacityTextTemplate;
         private RectTransform iconRow;
         private RectTransform iconRowSpacer;
@@ -284,6 +289,8 @@ namespace InfraSpaceMultiResourceLogistics
             sliderBackgroundSprite = background?.sprite;
             sliderFillSprite = fill?.sprite;
             sliderHandleSprite = handle?.sprite;
+            sliderTrackRect = background?.rectTransform;
+            sliderHandleRect = handle?.rectTransform;
             sliderBackgroundColor = background?.color ?? Color.white;
             sliderFillColor = fill?.color ?? Color.white;
             sliderHandleColor = handle?.color ?? Color.white;
@@ -737,9 +744,15 @@ namespace InfraSpaceMultiResourceLogistics
                 List<string> partners = PartnerNames(center, resources[i]);
                 bool storageOnly = IsStorageOnly(center, resources[i]);
                 bool missing = partners.Count == 0;
-                bool blocked = !storageOnly && !missing && IsRoadBlocked(center, resources[i]);
-                bool warning = !storageOnly && (missing || blocked);
-                string tip = DescribeResourceTip(center, partners, storageOnly, missing, blocked);
+                List<string> blockedNames = storageOnly || missing
+                    ? null
+                    : BlockedPartnerNames(center, resources[i]);
+                bool blocked = blockedNames != null && blockedNames.Count > 0;
+                bool flowWarned = CenterHeadWarnings.IsResourceWarned(
+                    GetConsumerProducer(center)?.building,
+                    resources[i]);
+                bool warning = flowWarned || (!storageOnly && (missing || blocked));
+                string tip = DescribeResourceTip(center, partners, storageOnly, missing, blockedNames, true);
                 ResourceChipButton button = chip.GetComponent<ResourceChipButton>();
                 if (button != null &&
                     button.roadBlocked == warning &&
@@ -759,9 +772,9 @@ namespace InfraSpaceMultiResourceLogistics
                 Image background = chip.GetComponent<Image>();
                 if (background != null)
                 {
-                    background.color = storageOnly
-                        ? StorageOnlyColor
-                        : warning ? RoadWarningColor : Color.white;
+                    background.color = warning
+                        ? RoadWarningColor
+                        : storageOnly ? StorageOnlyColor : Color.white;
                 }
 
                 Image icon = chip.transform.Find("Icon")?.GetComponent<Image>();
@@ -774,6 +787,8 @@ namespace InfraSpaceMultiResourceLogistics
 
                 chip.GetComponent<TooltipHoverable>()?.Init(resources[i].GetNameInGame(), tip);
             }
+
+            ApplyPartnerRows(center);
         }
 
         private GameObject CreateResourceChip(Resource resource)
@@ -1003,14 +1018,22 @@ namespace InfraSpaceMultiResourceLogistics
                 normal = { textColor = Color.white }
             };
             string[] lines = storageHoverTip.Split('\n');
-            float width = 0f;
+            float textWidth = 0f;
+            float numberWidth = 0f;
+            float columnGap = 16f * scale;
             for (int i = 0; i < lines.Length; i++)
             {
-                width = Mathf.Max(width, MeasureTextWidth(style, lines[i]));
+                SplitTipLine(lines[i], out string text, out string number, out _);
+                textWidth = Mathf.Max(textWidth, MeasureTextWidth(style, text));
+                if (number != null)
+                {
+                    numberWidth = Mathf.Max(numberWidth, MeasureTextWidth(style, number));
+                }
             }
 
             float lineHeight = style.fontSize + 5f * scale;
             float pad = 8f * scale;
+            float width = textWidth + (numberWidth > 0f ? columnGap + numberWidth : 0f);
             width += pad * 2f;
             float height = lines.Length * lineHeight + pad * 2f;
             Vector2 mouse = Event.current.mousePosition;
@@ -1034,11 +1057,33 @@ namespace InfraSpaceMultiResourceLogistics
             GUI.color = new Color(0.04f, 0.08f, 0.12f, 0.96f);
             GUI.DrawTexture(new Rect(x, y, width, height), Texture2D.whiteTexture);
             GUI.color = Color.white;
+            GUIStyle numberStyle = new GUIStyle(style)
+            {
+                alignment = TextAnchor.UpperRight
+            };
+            float contentWidth = width - pad * 2f;
             for (int i = 0; i < lines.Length; i++)
             {
+                SplitTipLine(lines[i], out string text, out string number, out bool warn);
+                Color lineColor = warn ? RoadWarningColor : Color.white;
+                style.normal.textColor = lineColor;
+                numberStyle.normal.textColor = lineColor;
+                float textRoom = number == null ? contentWidth : contentWidth - numberWidth - columnGap;
                 style.Draw(
-                    new Rect(x + pad, y + pad + i * lineHeight, width - pad * 2f, lineHeight),
-                    lines[i],
+                    new Rect(x + pad, y + pad + i * lineHeight, textRoom, lineHeight),
+                    text,
+                    false,
+                    false,
+                    false,
+                    false);
+                if (number == null)
+                {
+                    continue;
+                }
+
+                numberStyle.Draw(
+                    new Rect(x + pad, y + pad + i * lineHeight, contentWidth, lineHeight),
+                    number,
                     false,
                     false,
                     false,
@@ -1511,6 +1556,10 @@ namespace InfraSpaceMultiResourceLogistics
             {
                 alignment = TextAnchor.MiddleRight
             };
+            GUIStyle slashStyle = new GUIStyle(labelStyle)
+            {
+                alignment = TextAnchor.MiddleCenter
+            };
 
             GUI.BeginGroup(viewport);
             GUI.BeginGroup(new Rect(0f, -storageScroll.y, contentWidth, contentHeight));
@@ -1521,8 +1570,13 @@ namespace InfraSpaceMultiResourceLogistics
                 List<string> partners = PartnerNames(center, resource);
                 bool storageOnly = IsStorageOnly(center, resource);
                 bool missing = partners.Count == 0;
-                bool blocked = !storageOnly && !missing && IsRoadBlocked(center, resource);
-                if (!storageOnly && (missing || blocked))
+                List<string> blockedNames = storageOnly || missing
+                    ? null
+                    : BlockedPartnerNames(center, resource);
+                bool blocked = blockedNames != null && blockedNames.Count > 0;
+                Building building = GetConsumerProducer(center)?.building;
+                bool flowWarned = CenterHeadWarnings.IsResourceWarned(building, resource);
+                if (flowWarned || (!storageOnly && (missing || blocked)))
                 {
                     Color previous = GUI.color;
                     GUI.color = RoadWarningColor;
@@ -1546,60 +1600,42 @@ namespace InfraSpaceMultiResourceLogistics
                 if (Event.current.type == EventType.Repaint &&
                     iconRect.Contains(Event.current.mousePosition))
                 {
-                    Building building = GetConsumerProducer(center)?.building;
-                    string link = DescribeResourceTip(center, partners, storageOnly, missing, blocked);
-                    storageHoverTip = building == null
-                        ? link
-                        : link + "\n" + TransitTip.Describe(building, resource);
+                    CenterHeadWarnings.ReadMinuteFlow(
+                        building == null ? 0L : building.GetID(),
+                        resource.name,
+                        out int inflow,
+                        out int outflow);
+                    StringBuilder link = new StringBuilder();
+                    if (flowWarned)
+                    {
+                        link.Append('\u0002');
+                    }
+
+                    link.Append(CenterHeadWarnings.NameWithWindow(resource.GetNameInGame(), true));
+                    link.Append('\t');
+                    link.Append(CenterHeadWarnings.RateText(inflow, outflow));
+                    link.Append('\n');
+                    link.Append(DescribeResourceTip(center, partners, storageOnly, missing, blockedNames, false));
+                    if (building != null)
+                    {
+                        link.Append('\n');
+                        TransitTip.AppendAligned(link, building, resource);
+                    }
+
+                    storageHoverTip = link.ToString();
                 }
 
-                int storage = GetStorage(GetConsumerProducer(center), resource);
-                string caption = resource.GetNameInGame() + " " + storage;
-                float captionLeft = rowHeight + 2f * scale;
-                float captionWidth = MeasureTextWidth(labelStyle, caption);
                 int capacity = GetCapacity(center, resource);
                 int maxStorage = CollectionProductionLogic.GetMaxStorage();
-                float capacityWidth = MeasureTextWidth(capacityStyle, maxStorage.ToString());
                 float gap = 6f * scale;
-                float capacityLeft = contentWidth - capacityWidth;
-                float maxCaption = Mathf.Max(36f * scale, capacityLeft - captionLeft - gap * 2f - 48f * scale);
-                captionWidth = Mathf.Min(captionWidth, maxCaption);
-                bool viewing = coverageResource != null && resource.name == coverageResource.name;
-                labelStyle.normal.textColor = viewing ? CoverageNameColor : Color.white;
-                Rect nameRect = new Rect(captionLeft, y, captionWidth, rowHeight);
-                if (viewing)
-                {
-                    Color previous = GUI.color;
-                    GUI.color = new Color(0.1f, 0.34f, 0.48f, 1f);
-                    GUI.DrawTexture(
-                        new Rect(
-                            nameRect.x - 3f * scale,
-                            nameRect.y + 4f * scale,
-                            nameRect.width + 6f * scale,
-                            nameRect.height - 8f * scale),
-                        Texture2D.whiteTexture);
-                    GUI.color = previous;
-                }
-
-                GUI.Label(nameRect, caption, labelStyle);
-                if (Event.current.type == EventType.MouseDown &&
-                    Event.current.button == 0 &&
-                    nameRect.Contains(Event.current.mousePosition))
-                {
-                    SelectCoverageResource(resource);
-                    Event.current.Use();
-                }
-
-                if (Event.current.type == EventType.Repaint &&
-                    nameRect.Contains(Event.current.mousePosition))
-                {
-                    storageHoverTip = CoverageNameTip(viewing, viewing && coverageStorageOnly);
-                }
-
-                float sliderLeft = captionLeft + captionWidth + gap;
-                float sliderWidth = Mathf.Max(36f * scale, capacityLeft - gap - sliderLeft);
+                float digitWidth = MeasureTextWidth(capacityStyle, "8888");
+                float slashWidth = MeasureTextWidth(slashStyle, "/");
+                float numberWidth = digitWidth + slashWidth + digitWidth;
+                float numberLeft = contentWidth - numberWidth;
+                float sliderLeft = iconRect.xMax + gap;
+                float sliderWidth = Mathf.Max(48f * scale, numberLeft - gap - sliderLeft);
                 float value = DrawNativeSlider(
-                    new Rect(sliderLeft, y + 5f * scale, sliderWidth, 21f * scale),
+                    new Rect(sliderLeft, y + 4f * scale, sliderWidth, rowHeight - 8f * scale),
                     capacity,
                     CollectionProductionLogic.minStorageLimit,
                     maxStorage,
@@ -1610,8 +1646,48 @@ namespace InfraSpaceMultiResourceLogistics
                     SetCapacity(center, resource, rounded);
                 }
 
-                capacityStyle.normal.textColor = Color.white;
-                GUI.Label(new Rect(capacityLeft, y, capacityWidth, rowHeight), rounded.ToString(), capacityStyle);
+                int storage = GetStorage(GetConsumerProducer(center), resource);
+                string stockText = Mathf.Max(0, storage).ToString();
+                string capacityText = Mathf.Max(0, rounded).ToString();
+                bool viewing = coverageResource != null && resource.name == coverageResource.name;
+                Rect numberRect = new Rect(numberLeft, y, numberWidth, rowHeight);
+                Rect stockRect = new Rect(numberLeft, y, digitWidth, rowHeight);
+                Rect slashRect = new Rect(numberLeft + digitWidth, y, slashWidth, rowHeight);
+                Rect capacityRect = new Rect(numberLeft + digitWidth + slashWidth, y, digitWidth, rowHeight);
+                if (viewing)
+                {
+                    Color previous = GUI.color;
+                    GUI.color = new Color(0.1f, 0.34f, 0.48f, 1f);
+                    GUI.DrawTexture(
+                        new Rect(
+                            numberRect.x - 3f * scale,
+                            numberRect.y + 4f * scale,
+                            numberRect.width + 6f * scale,
+                            numberRect.height - 8f * scale),
+                        Texture2D.whiteTexture);
+                    GUI.color = previous;
+                }
+
+                Color numberColor = viewing ? CoverageNameColor : Color.white;
+                capacityStyle.normal.textColor = numberColor;
+                labelStyle.normal.textColor = numberColor;
+                slashStyle.normal.textColor = numberColor;
+                GUI.Label(stockRect, stockText, capacityStyle);
+                GUI.Label(slashRect, "/", slashStyle);
+                GUI.Label(capacityRect, capacityText, labelStyle);
+                if (Event.current.type == EventType.MouseDown &&
+                    Event.current.button == 0 &&
+                    numberRect.Contains(Event.current.mousePosition))
+                {
+                    SelectCoverageResource(resource);
+                    Event.current.Use();
+                }
+
+                if (Event.current.type == EventType.Repaint &&
+                    numberRect.Contains(Event.current.mousePosition))
+                {
+                    storageHoverTip = CoverageNameTip(viewing, viewing && coverageStorageOnly);
+                }
             }
 
             GUI.EndGroup();
@@ -1705,30 +1781,65 @@ namespace InfraSpaceMultiResourceLogistics
                 }
             }
 
-            float handleSize = Mathf.Min(rect.height, 20f * Mathf.Max(0.75f, Screen.height / 1080f));
-            float trackHeight = Mathf.Max(5f, rect.height * 0.32f);
-            Rect track = new Rect(
-                rect.x + handleSize * 0.5f,
-                rect.center.y - trackHeight * 0.5f,
-                Mathf.Max(1f, rect.width - handleSize),
-                trackHeight);
             float amount = Mathf.InverseLerp(minimum, maximum, value);
-            DrawStyledSprite(sliderBackgroundSprite, track, sliderBackgroundColor);
-            if (amount > 0f)
+            RadiusSliderMetrics(out float trackHeight, out float handleSize);
+            Rect track = new Rect(
+                rect.x,
+                rect.center.y - trackHeight * 0.5f,
+                rect.width,
+                trackHeight);
+            DrawFixedSprite(sliderBackgroundSprite, track, sliderBackgroundColor);
+            float shownWidth = track.width * amount;
+            if (amount > 0f && shownWidth > 0.5f)
             {
-                DrawStyledSprite(
+                DrawFillSprite(
                     sliderFillSprite,
-                    new Rect(track.x, track.y, track.width * amount, track.height),
+                    new Rect(track.x, track.y, shownWidth, track.height),
+                    track.width,
                     sliderFillColor);
             }
 
             Rect handle = new Rect(
-                track.x + track.width * amount - handleSize * 0.5f,
+                track.x + shownWidth - handleSize * 0.5f,
                 rect.center.y - handleSize * 0.5f,
                 handleSize,
                 handleSize);
-            DrawStyledSprite(sliderHandleSprite, handle, sliderHandleColor);
+            DrawFixedSprite(sliderHandleSprite, handle, sliderHandleColor);
             return value;
+        }
+
+        private void RadiusSliderMetrics(out float trackHeight, out float handleSize)
+        {
+            float scale = Mathf.Max(0.75f, Screen.height / 1080f);
+            Canvas canvas = GetComponentInParent<Canvas>();
+            float scaleFactor = canvas == null ? scale : Mathf.Max(0.75f, canvas.scaleFactor);
+            float nativeTrack = sliderBackgroundSprite == null
+                ? 6f
+                : sliderBackgroundSprite.rect.height;
+            trackHeight = Mathf.Max(3f, nativeTrack * scaleFactor);
+            float nativeHandle = sliderHandleSprite == null
+                ? 14f
+                : Mathf.Max(sliderHandleSprite.rect.width, sliderHandleSprite.rect.height);
+            handleSize = Mathf.Max(8f, nativeHandle * scaleFactor);
+            Camera camera = PanelCamera();
+            if (sliderTrackRect != null)
+            {
+                float measured = GetGuiRect(sliderTrackRect, camera).height;
+                if (measured > 1f)
+                {
+                    trackHeight = measured;
+                }
+            }
+
+            if (sliderHandleRect != null)
+            {
+                Rect handle = GetGuiRect(sliderHandleRect, camera);
+                float measured = Mathf.Max(handle.width, handle.height);
+                if (measured > 1f)
+                {
+                    handleSize = measured;
+                }
+            }
         }
 
         private void DrawNativeScrollbar(Rect rect, float maxScroll)
@@ -1815,6 +1926,130 @@ namespace InfraSpaceMultiResourceLogistics
             else
             {
                 GUI.DrawTexture(target, Texture2D.whiteTexture);
+            }
+
+            GUI.color = previous;
+        }
+
+        private static void DrawFixedSprite(Sprite sprite, Rect target, Color color)
+        {
+            if (sprite != null && HasBorder(sprite))
+            {
+                DrawSlicedSprite(sprite, target, color);
+                return;
+            }
+
+            DrawStyledSprite(sprite, target, color);
+        }
+
+        private static void DrawFillSprite(Sprite sprite, Rect shown, float fullWidth, Color color)
+        {
+            if (shown.width <= 0f)
+            {
+                return;
+            }
+
+            if (sprite != null && !HasBorder(sprite) && fullWidth > 0f)
+            {
+                DrawRevealedSprite(sprite, shown, shown.width / fullWidth, color);
+                return;
+            }
+
+            DrawFixedSprite(sprite, shown, color);
+        }
+
+        private static void DrawRevealedSprite(Sprite sprite, Rect shown, float amount, Color color)
+        {
+            Rect textureRect = sprite.textureRect;
+            float textureWidth = Mathf.Max(1f, sprite.texture.width);
+            float textureHeight = Mathf.Max(1f, sprite.texture.height);
+            Rect uv = new Rect(
+                textureRect.x / textureWidth,
+                textureRect.y / textureHeight,
+                textureRect.width * Mathf.Clamp01(amount) / textureWidth,
+                textureRect.height / textureHeight);
+            Color previous = GUI.color;
+            GUI.color = color;
+            GUI.DrawTextureWithTexCoords(shown, sprite.texture, uv, true);
+            GUI.color = previous;
+        }
+
+        private static bool HasBorder(Sprite sprite)
+        {
+            Vector4 border = sprite.border;
+            return border.x > 0.5f || border.y > 0.5f || border.z > 0.5f || border.w > 0.5f;
+        }
+
+        private static void DrawSlicedSprite(Sprite sprite, Rect target, Color color)
+        {
+            Rect textureRect = sprite.textureRect;
+            Vector4 border = sprite.border;
+            float left = border.x;
+            float bottom = border.y;
+            float right = border.z;
+            float top = border.w;
+            if (left + right >= textureRect.width || bottom + top >= textureRect.height ||
+                target.width <= 1f || target.height <= 1f)
+            {
+                DrawStyledSprite(sprite, target, color);
+                return;
+            }
+
+            float heightScale = target.height / Mathf.Max(1f, textureRect.height);
+            float destLeft = left * heightScale;
+            float destRight = right * heightScale;
+            float destBottom = bottom * heightScale;
+            float destTop = top * heightScale;
+            if (destLeft + destRight > target.width)
+            {
+                float fit = target.width / (destLeft + destRight);
+                destLeft *= fit;
+                destRight *= fit;
+            }
+
+            if (destBottom + destTop > target.height)
+            {
+                float fit = target.height / (destBottom + destTop);
+                destBottom *= fit;
+                destTop *= fit;
+            }
+
+            float sourceMidWidth = textureRect.width - left - right;
+            float sourceMidHeight = textureRect.height - bottom - top;
+            float destMidWidth = target.width - destLeft - destRight;
+            float destMidHeight = target.height - destTop - destBottom;
+            float[] sourceX = { textureRect.x, textureRect.x + left, textureRect.x + left + sourceMidWidth };
+            float[] sourceY = { textureRect.yMax - top, textureRect.y + bottom, textureRect.y };
+            float[] sourceW = { left, sourceMidWidth, right };
+            float[] sourceH = { top, sourceMidHeight, bottom };
+            float[] destX = { target.x, target.x + destLeft, target.x + destLeft + destMidWidth };
+            float[] destY = { target.y, target.y + destTop, target.y + destTop + destMidHeight };
+            float[] destW = { destLeft, destMidWidth, destRight };
+            float[] destH = { destTop, destMidHeight, destBottom };
+            Color previous = GUI.color;
+            GUI.color = color;
+            float textureWidth = Mathf.Max(1f, sprite.texture.width);
+            float textureHeight = Mathf.Max(1f, sprite.texture.height);
+            for (int row = 0; row < 3; row++)
+            {
+                for (int column = 0; column < 3; column++)
+                {
+                    if (sourceW[column] <= 0f || sourceH[row] <= 0f || destW[column] <= 0f || destH[row] <= 0f)
+                    {
+                        continue;
+                    }
+
+                    Rect uv = new Rect(
+                        sourceX[column] / textureWidth,
+                        sourceY[row] / textureHeight,
+                        sourceW[column] / textureWidth,
+                        sourceH[row] / textureHeight);
+                    GUI.DrawTextureWithTexCoords(
+                        new Rect(destX[column], destY[row], destW[column], destH[row]),
+                        sprite.texture,
+                        uv,
+                        true);
+                }
             }
 
             GUI.color = previous;
@@ -2151,7 +2386,7 @@ namespace InfraSpaceMultiResourceLogistics
 
         private static float MinimumStorageHeight(float scale)
         {
-            return 5f * 31f * scale + 14f * scale;
+            return 4f * 31f * scale + 14f * scale;
         }
 
         private static float LocalHeightToScreen(RectTransform rect, Camera camera, float localHeight)
@@ -2600,19 +2835,151 @@ namespace InfraSpaceMultiResourceLogistics
             }
         }
 
-        private static bool IsRoadBlocked(object center, Resource resource)
+        private static List<string> BlockedPartnerNames(object center, Resource resource)
         {
-            if (center is CollectionProductionLogic collection)
+            List<string> names = new List<string>();
+            Building self = GetConsumerProducer(center)?.building;
+            if (self == null || resource == null)
             {
-                return MultiResourceLogisticsEngine.IsResourceRoadBlocked(collection, resource);
+                return names;
             }
 
-            if (center is DistributionProductionLogic distribution)
+            bool selfIsCollection = center is CollectionProductionLogic;
+            List<Reference<Building>> links = selfIsCollection
+                ? ((CollectionProductionLogic)center).connectedDistributionCenters
+                : ((DistributionProductionLogic)center).connectedCollectionCenters;
+            if (links == null)
             {
-                return MultiResourceLogisticsEngine.IsResourceRoadBlocked(distribution, resource);
+                return names;
             }
 
-            return false;
+            for (int i = 0; i < links.Count && names.Count < 8; i++)
+            {
+                Building building = links[i]?.Get();
+                if (building == null || !building.IsValidAndBuilt())
+                {
+                    continue;
+                }
+
+                bool matches = selfIsCollection
+                    ? building.consumerProducer?.productionLogic is DistributionProductionLogic distribution &&
+                      CenterState.Moves(distribution, resource)
+                    : building.consumerProducer?.productionLogic is CollectionProductionLogic collection &&
+                      CenterState.Moves(collection, resource);
+                if (!matches)
+                {
+                    continue;
+                }
+
+                Building source = selfIsCollection ? self : building;
+                Building destination = selfIsCollection ? building : self;
+                if (MultiResourceLogisticsEngine.TruckRouteBlocked(source, destination))
+                {
+                    names.Add(TransitTip.BuildingName(building));
+                }
+            }
+
+            return names;
+        }
+
+        private void ApplyPartnerRows(object center)
+        {
+            Building self = GetConsumerProducer(center)?.building;
+            if (self == null)
+            {
+                return;
+            }
+
+            bool selfIsCollection = center is CollectionProductionLogic;
+            Sprite red = UnreachableRowSprite();
+            CollectionDistributionCenterEntryPanel[] entries =
+                GetComponentsInChildren<CollectionDistributionCenterEntryPanel>(false);
+            for (int i = 0; i < entries.Length; i++)
+            {
+                CollectionDistributionCenterEntryPanel entry = entries[i];
+                Building other = entry == null ? null : entry.building;
+                if (other == null)
+                {
+                    continue;
+                }
+
+                Image image = EntryBackground(entry);
+                if (image == null)
+                {
+                    continue;
+                }
+
+                int id = image.GetInstanceID();
+                if (!entryBackgrounds.ContainsKey(id))
+                {
+                    entryBackgrounds[id] = image.sprite;
+                    entryBackgroundColors[id] = image.color;
+                }
+
+                bool blocked = other.IsValidAndBuilt() &&
+                               MultiResourceLogisticsEngine.TruckRouteBlocked(
+                                   selfIsCollection ? self : other,
+                                   selfIsCollection ? other : self);
+                if (blocked)
+                {
+                    if (red != null)
+                    {
+                        image.sprite = red;
+                        image.color = Color.white;
+                    }
+                    else
+                    {
+                        image.color = RoadWarningColor;
+                    }
+                }
+                else
+                {
+                    image.sprite = entryBackgrounds[id];
+                    image.color = entryBackgroundColors[id];
+                }
+            }
+        }
+
+        private static Image EntryBackground(CollectionDistributionCenterEntryPanel entry)
+        {
+            Image own = entry.GetComponent<Image>();
+            if (own != null)
+            {
+                return own;
+            }
+
+            Image best = null;
+            float bestArea = 0f;
+            Image[] images = entry.GetComponentsInChildren<Image>(true);
+            for (int i = 0; i < images.Length; i++)
+            {
+                Image image = images[i];
+                if (image == null || image.GetComponent<Button>() != null || image.GetComponentInParent<Button>() != null)
+                {
+                    continue;
+                }
+
+                Rect rect = image.rectTransform.rect;
+                float area = rect.width * rect.height;
+                if (area > bestArea && rect.width > 40f)
+                {
+                    best = image;
+                    bestArea = area;
+                }
+            }
+
+            return best != null ? best : entry.GetComponent<Image>();
+        }
+
+        private static Sprite UnreachableRowSprite()
+        {
+            if (unreachableRowSprite != null)
+            {
+                return unreachableRowSprite;
+            }
+
+            unreachableRowSprite = WorldScripts.Inst?.trainLinePanel?.trainStationItemTemplate?.redSprite;
+            return unreachableRowSprite;
         }
 
         private static List<string> PartnerNames(object center, Resource resource)
@@ -2670,7 +3037,7 @@ namespace InfraSpaceMultiResourceLogistics
             object center,
             List<string> partners,
             bool missing,
-            bool blocked)
+            List<string> blockedNames)
         {
             string partnerLabel = center is DistributionProductionLogic ? "搜集中心" : "配送中心";
             StringBuilder text = new StringBuilder();
@@ -2690,9 +3057,19 @@ namespace InfraSpaceMultiResourceLogistics
                 }
             }
 
-            if (blocked)
+            Building self = GetConsumerProducer(center)?.building;
+            string selfName = TransitTip.BuildingName(self);
+            bool fromHere = center is CollectionProductionLogic;
+            if (blockedNames != null)
             {
-                text.Append("\n货车无法从搜集中心开到配送中心");
+                for (int i = 0; i < blockedNames.Count; i++)
+                {
+                    text.Append('\n');
+                    text.Append("货车无法从 ");
+                    text.Append(fromHere ? selfName : blockedNames[i]);
+                    text.Append(" 开到 ");
+                    text.Append(fromHere ? blockedNames[i] : selfName);
+                }
             }
 
             return text.ToString();
@@ -2703,14 +3080,38 @@ namespace InfraSpaceMultiResourceLogistics
             List<string> partners,
             bool storageOnly,
             bool missing,
-            bool blocked)
+            List<string> blockedNames,
+            bool includeActions)
         {
             if (storageOnly)
             {
-                return "仅存储，不搜集也不配送\n左键恢复搜集和配送\n右键移除此物资";
+                return includeActions
+                    ? "仅存储，不搜集也不配送\n左键恢复搜集和配送\n右键移除此物资"
+                    : "仅存储，不搜集也不配送";
             }
 
-            return DescribeLink(center, partners, missing, blocked) + "\n左键改为仅存储\n右键移除此物资";
+            string link = DescribeLink(center, partners, missing, blockedNames);
+            return includeActions ? link + "\n左键改为仅存储\n右键移除此物资" : link;
+        }
+
+        private static void SplitTipLine(string line, out string text, out string number, out bool warn)
+        {
+            warn = line != null && line.Length > 0 && line[0] == '\u0002';
+            if (warn)
+            {
+                line = line.Substring(1);
+            }
+
+            int split = line == null ? -1 : line.IndexOf('\t');
+            if (split < 0)
+            {
+                text = line ?? string.Empty;
+                number = null;
+                return;
+            }
+
+            text = line.Substring(0, split);
+            number = line.Substring(split + 1);
         }
 
         private static bool IsStorageOnly(object center, Resource resource)
