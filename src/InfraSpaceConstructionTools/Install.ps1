@@ -10,5 +10,6 @@ New-Item -ItemType Directory -Path $destination -Force | Out-Null
 Copy-Item (Join-Path $output "InfraSpaceConstructionTools.dll") $destination -Force
 Copy-Item (Join-Path $output "0Harmony.dll") $destination -Force
 Copy-Item (Join-Path $projectRoot "config.json") $destination -Force
+Copy-Item (Join-Path $projectRoot "logo.jpg") $destination -Force
 
 Write-Host "Installed InfraSpaceConstructionTools to $destination"

@@ -19,7 +19,7 @@
 
 当前安装目录里还有 `.dll.old`、`.dll.previous` 和 `InfraSpaceSimProbe`。这些不要带进工坊包。`InfraSpaceSimProbe` 是本地探针，不发布。
 
-`logo.jpg` 放在模组目录根上，建议 256×256，必须小于 1MB。它同时是游戏内模组列表图标和工坊预览图。四个目录里现在都还没有这张图，不补就不要点 Upload。
+`logo.jpg` 放在模组目录根上，256×256，必须小于 1MB。它同时是游戏内模组列表图标和工坊预览图。四张图标已经放进各自的源码目录和安装目录：建造是琥珀色框选，物流是青色双枢纽，生产是绿色柱状图，车站是铜色分岔。左下角都有同一枚浅色圆底 Y，用来标出这是同一系列。
 
 `config.json` 的 `name` 不要改。程序集文件名必须仍以这个名字开头，游戏靠它加载。
 
@@ -45,6 +45,8 @@
 | 车站工具 | 放置或编辑车站时，轨道端口和公路出入口方向不同；线路面板里拖动站点排序；鼠标停在车站或列车物资上，能看到发出建筑、收货建筑、下一站和数量 |
 
 ## 建造工具
+
+已发布：<https://steamcommunity.com/sharedfiles/filedetails/?id=3829349603>
 
 工坊标题：`Construction Tools`
 
@@ -89,6 +91,8 @@ Report bugs at https://github.com/yangyang8599/InfraSpace_mod/issues and name Co
 ```
 
 ## 多物资物流
+
+已发布：<https://steamcommunity.com/sharedfiles/filedetails/?id=3829355527>
 
 工坊标题：`Multi-Resource Logistics`
 
@@ -137,6 +141,8 @@ Report bugs at https://github.com/yangyang8599/InfraSpace_mod/issues and name Mu
 ```
 
 ## 生产分析
+
+已发布：<https://steamcommunity.com/sharedfiles/filedetails/?id=3829352111>
 
 工坊标题：`Production Insights`
 
@@ -187,6 +193,8 @@ Report bugs at https://github.com/yangyang8599/InfraSpace_mod/issues and name Pr
 ```
 
 ## 车站工具
+
+已发布：<https://steamcommunity.com/sharedfiles/filedetails/?id=3829354211>
 
 工坊标题：`Station Tools`
 
